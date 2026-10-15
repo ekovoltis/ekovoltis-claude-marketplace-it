@@ -106,6 +106,11 @@ def cmd_get(args: list[str]) -> None:
             max_kb = int(rest.pop(0))
         else:
             fail(f"Nieznany parametr {flag}")
+    if out_file is not None:
+        problem = C.out_path_problem(Path.cwd(), out_file)
+        if problem:
+            C.audit({"typ": "odmowa-zapisu", "url": url, "out": out_file, "powod": problem})
+            fail(problem, 3)
     try:
         status, payload = http("GET", url)
     except RuntimeError as e:

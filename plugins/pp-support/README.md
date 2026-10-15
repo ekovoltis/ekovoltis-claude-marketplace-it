@@ -1,4 +1,4 @@
-# pp-support 0.1.0
+# pp-support 0.1.1
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -17,7 +17,7 @@ pp-support/
 │   ├── hook_prompt.py              rejestracja akceptacji i odwołań z wiadomości człowieka
 │   ├── hook_audit.py               dziennik audytowy
 │   ├── hook_session_start.py       konfiguracja i kontrola wymagań
-│   └── run-py                      uruchamianie hooków, blokada przy braku Pythona
+│   └── run-py                      uruchamianie hooków, blokada przy braku Pythona i awarii hooka
 ├── skills/
 │   ├── zgloszenie/                 przebieg obsługi zgłoszenia i szablon planu
 │   └── sprawdz-dostepy/            test i interpretacja dostępów
