@@ -1,0 +1,7 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+# Artefakty pracy z pluginem pp-support: moga zawierac dane klientow z Dataverse
+zgloszenia/
+dostepy-*.json
