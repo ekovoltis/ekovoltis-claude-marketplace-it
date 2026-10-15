@@ -1,0 +1,1997 @@
+{
+ "zrodlo": "Portfolio Automatyzacji (artefakt claude.ai 9MZTkmB9katvHcPxBTnYaJ), kolekcja automations",
+ "stan_na": "2026-10-15",
+ "uwaga": "Migawka tylko do odczytu. Zrodlo prawdy nie zostalo jeszcze ustalone.",
+ "pozycje": [
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "new",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "pobieranie transakcji z listy SharePoint uzupełnianej przez Trading / wywołanie robota pobierającego raport zawartych transakcji z portalu IRGiT / załadowanie pobranego raportu (przeniesionego na SharePoint) do tabeli",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-10"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "new",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "uruchomienie robota pobierającego raporty depozytów z portalu IRGiT oraz załadowanie ich do dedykowanych tabel w Microsoft Fabric",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-11"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "new",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "ładowanie danych do lakehouse ekovoltis z pliku znajdującego się na SharePoint zawierającego kontrakty na zakup energii od wytwórców",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-12"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "SapIntegration",
+   "status": "done",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "integracja faktur oraz wystawianie danych do DWH technical – dostęp przez SAP możliwy za pomocą endpointów zbudowanych w Power Automate",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-13"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Umowy",
+   "opis": "Formularz do przekazywania umów brokerskich przez Brokerów z obsługą komunikacji z użytkownikami zewnętrznymi",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-14"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Umowy",
+   "opis": "Informowanie Brokera o wyniku weryfikacji umowy",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-15"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Umowy",
+   "opis": "Segregacja dokumentów przesłanych przez Brokera",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-16"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Umowy",
+   "opis": "Odczyt informacji z przesłanej umowy-Okres Sprzedaży,PPE",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-17"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Umowy",
+   "opis": "Odczyt kalkulatora wolumenu",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-18"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Umowy",
+   "opis": "Integracja Podpisu umowy z Autenti",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-19"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "IrisIntegration",
+   "status": "done",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "ładowanie tabel Azure SQL Database (baza danych Ebicom) z obszaru Biling do lakehouse ekovoltis",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-2"
+  },
+  {
+   "prefix": "009",
+   "akronim": "Transze",
+   "nazwa": "Transze",
+   "status": "done",
+   "rozwiazanie": "Billing + Portal klienta",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Rozliczenia",
+   "opis": "Lista w Sharepoint, na której trading zaznacza, że klient kupił transze. Po zawarciu transzy (zakupie transzy przez klienta) trading zaznacza na sharepoincie (lista sharepoint), że dany klient kupił transze.",
+   "trigger": "",
+   "systemy": [],
+   "developer": [
+    "Wojciechowski Adam",
+    "Bus Przemysław"
+   ],
+   "wlasciciel": [
+    "Sokołowski Piotr",
+    "Gieras Maciej"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Zapytac Agaty/Adama czy to solution to 'Tranches' na ekovoltis?",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-20"
+  },
+  {
+   "prefix": "010",
+   "akronim": "MailToSP",
+   "nazwa": "Import plików z maila trading na sharepoint",
+   "status": "done",
+   "rozwiazanie": "Do analizy",
+   "dzial": [
+    "Trading",
+    "IT",
+    "Finansowy"
+   ],
+   "kategoria": "Rozliczenia",
+   "opis": "Pliki z deklaracją produkcji firm z Grupy są pobierane z maila i uploadowane na sharepoint",
+   "trigger": "wpływ maila od określonego nadawcy, z określonym tytułem",
+   "systemy": [
+    "SharePoint",
+    "Power Automate Cloud"
+   ],
+   "developer": [
+    "Bus Przemysław"
+   ],
+   "wlasciciel": [
+    "Gieras Maciej"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Zależności: pliki są odczytywane przez Krystiana do Fabrica; flowy nie są biznesowo użyteczne, bo pliki są przesyłane w nieprawidłowym formacie, aktualnie <1.10.2025> flow do rozliczeń SD7 jest wyłączone (powodowało niepotrzebną ręczną pracę w data)\n\nhttps://make.powerautomate.com/environments/e3a3a7e8-1b2a-e86a-a007-952d0260d158/solutions",
+   "e2v": false,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-21"
+  },
+  {
+   "prefix": "001",
+   "akronim": "SOGL",
+   "nazwa": "Przekazywanie do OSD planowanej produkcji EE instalacji",
+   "status": "done",
+   "rozwiazanie": "Do analizy",
+   "dzial": [
+    "Wytwórcy"
+   ],
+   "kategoria": "Prognozy",
+   "opis": "Przesyłanie prognoz na 9 dni do przodu na 4 portale głównych OSD. Prognozy odczytywane z Fabrica; Tauraon & Enea - import xml (PAD); Enea & PGE - import excel na podstawie templatek (raz do roku zmiana templatek); potem import na platformy",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Power Automate Cloud",
+    "Power Automate Desktop",
+    "Excel",
+    "Dataverse",
+    "Fabric (SQL)"
+   ],
+   "developer": [
+    "Bus Przemysław"
+   ],
+   "wlasciciel": [
+    "Cielemęcka Sylwia"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V/Shared Documents/IT/Automation/Automation Docs/001_SOGL",
+   "komentarz": "Solution w poprawnym stanie, ustalone CR, uruchamia sie poprawnie. konieczne przeniesienie na nowe srodowisko i hypercare. (WR)\n\nPierwotne proponowane rozwiązanie (SharePoint): „Wdrożenie csire i etrm jak zmienia się to rozwiązanie i co musimy utrzymać po naszej stronie”",
+   "e2v": true,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-22"
+  },
+  {
+   "prefix": "003",
+   "akronim": "MailBOK",
+   "nazwa": "System serwisowy dla BOK - obsługa maili wpadających na skrzynkę BOK",
+   "status": "done",
+   "rozwiazanie": "Integracja z Jira",
+   "dzial": [
+    "BOK"
+   ],
+   "kategoria": "Obsługa klienta",
+   "opis": "Monitoring skrzynki, sprawdzanie każdego maila, który wpada na skrzynkę BOK -> spr czy istnieje dany wątek, jeśli nowy to założenie nowego itemu w liście; jeśli nie, to aktualizacja starego; Wysłanie do nadawcy zwrotki, że zostało przyjęte zgłoszenie",
+   "trigger": "E-mail",
+   "systemy": [
+    "Power Automate Cloud",
+    "SharePoint",
+    "Outlook (e-mail)"
+   ],
+   "developer": [
+    "Bus Przemysław"
+   ],
+   "wlasciciel": [
+    "Świętochowska Natalia"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "potencjalny rozwój - sprawdzenie skrzynki wysłąnych, czy mail nie poszedł do danego adresata więcej niż X razy w ciągu ostatniej godziny\n\nPierwotne proponowane rozwiązanie (SharePoint): „Integracja maila z Jira”",
+   "e2v": true,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-23"
+  },
+  {
+   "prefix": "008",
+   "akronim": "Szkolenia",
+   "nazwa": "System do wnioskowania o szkolenia",
+   "status": "deprecated",
+   "rozwiazanie": "Do wycofania",
+   "dzial": [
+    "HR"
+   ],
+   "kategoria": "Szkolenia",
+   "opis": "Formularz do zakładanie nowego itemu na liscie Sharepoint o wnioskach szkoleniowych; wysyłka wniosku o akceptację do menagera",
+   "trigger": "wypełnienie formularza",
+   "systemy": [
+    "SharePoint",
+    "MS Forms"
+   ],
+   "developer": [
+    "Bus Przemysław"
+   ],
+   "wlasciciel": [
+    "Tomczak Amelia"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Pierwotne proponowane rozwiązanie (SharePoint): „Nie używane”",
+   "e2v": false,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-24"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Inne"
+   ],
+   "kategoria": "Obsługa klienta",
+   "opis": "Do importu Gmin / Adam",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-25"
+  },
+  {
+   "prefix": "011",
+   "akronim": "Należności",
+   "nazwa": "Należności",
+   "status": "deprecated",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "BOK"
+   ],
+   "kategoria": "Obsługa klienta",
+   "opis": "Proces generowania i pobierania raportu ‘Wiekowanie należności’ z systemu Iris. \nRaport zapisywany jest w przestrzeni SharePoint zarządzanej przez użytkowników biznesowych.",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Power Automate Desktop",
+    "Power Automate Cloud",
+    "SharePoint",
+    "IRIS"
+   ],
+   "developer": [
+    "Rogman Wojciech"
+   ],
+   "wlasciciel": [
+    "Przyborowska Natalia"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V/Shared Documents/IT/Automation/Automation Docs/011_Naleznosci",
+   "komentarz": "Konieczna implementacja KeyVault oraz raportowania.\n\nPierwotne proponowane rozwiązanie (SharePoint): „Billing O ILE JEST POTRZEBNE DO POTWIERDZENIA BIZNESOWEGO”",
+   "e2v": true,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-26"
+  },
+  {
+   "prefix": "012",
+   "akronim": "PSE-UE",
+   "nazwa": "Monitoring strony PSE (Przetarg PL-UA)",
+   "status": "deprecated",
+   "rozwiazanie": "Do wycofania",
+   "dzial": [
+    "Prezes"
+   ],
+   "kategoria": "Inne",
+   "opis": "Gdy nowy artykuł, który spełnia warunki (keywordsy o ukrainie) się pojawia na stronie, to jest wysyłany mail do prezesa",
+   "trigger": "RSS",
+   "systemy": [
+    "RSS",
+    "Power Automate Cloud",
+    "Outlook (e-mail)"
+   ],
+   "developer": [
+    "Bus Przemysław"
+   ],
+   "wlasciciel": [
+    "Ostaszewski Piotr"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Wyczyszczone, usunieto dependencies (WR). Sprawdzic czy dziala.\n\nPierwotne proponowane rozwiązanie (SharePoint): „Do zaorania”",
+   "e2v": false,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-27"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "deprecated",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Rezerwacje",
+   "opis": "Formularz rejestracji rezerwacji NIP przez brokerów wraz z pełną obsługą rezerwacji i komunikacji z użytkownikami zewnętrznymi",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-28"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Rezerwacje",
+   "opis": "Obsługa rezerwacji w kanale bezpośrednim i pośrednim, wraz z obsługą limitów (test)",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-29"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "IrisIntegrationProducts",
+   "status": "done",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "ładowanie tabel Azure SQL Database (baza danych Ebicom) z obszaru Produkty do lakehouse ekovoltis",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-3"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Umowy",
+   "opis": "Proces obsługi umowy, podpisu oferty, treściowania dokumentów i powiadamiania odpowiednich działów o postępie",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-30"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Ofertowanie",
+   "opis": "Automat migrujący klientów z iris nieistniejących w CRM",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-31"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Rezerwacje",
+   "opis": "Proces rezygnacji z rezerwacji",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-32"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Rezerwacje",
+   "opis": "Proces wnioskowania o przedłuzenie ważności rezerwacji",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-33"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Umowy",
+   "opis": "Proces obsługi weryfikacji umów w kanale pośrednim i bezpośrednim wraz z automatyzacją komiunikacji z użytkownikami",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-34"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Ofertowanie",
+   "opis": "Pełne odzwierciedlenie procesu sprzedaży w Ekovoltis z kategoryzowaniem klientów, customowymi polami z odpowienią wymagalnością i regułami walidacji",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-36"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Ofertowanie",
+   "opis": "Możliwość pełnego ofertowania produktó FIX, FLEX, FIT, FIX+, FLEX+ z możliwością wariantowania, pilnowania cen i marż maksymalnych, obliczanie masy marży. Treściowanie ofert zgodnie z szablonami ofert, treściowanie maila do klienta z ofertami.",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-37"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Ofertowanie",
+   "opis": "Obsługa wysłanych ofert: możliwość wnioskowania o przedłużenie terminu ważności, możliwość akceptacji, możliwość zamknięcia, automatyzacja zamykania przterminowanych ofert",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-38"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Ofertowanie",
+   "opis": "Pełna funkcjonalnosć ofertowania przy pomocy eCennika. Automatyczne obliczanie cen i marż maksymalnych przypisanych do konkretnego klienta. Obsługa ankiety klienta. Zapisywanie parametrów kosztowych oferowanych wariantów klientowi",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-39"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "EnergyUsageApi",
+   "status": "done",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "Wykorzystuje EnergyUsageAPI (REST API wystawiane przez Ebicom) do ładowania danych pomiarowych przechowywanych w usłudze Azure Table Storage. Po pozytywnym przebiegu wysyła request do Power Automate oraz powiadamia użytkowników o aktualizacji danych przez Outlook.",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-4"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Ofertowanie",
+   "opis": "Osbługa Wycen indywidualnych: wnioskowanie o wycenę, weryfikacja kompletności, poprawności danych, zapisywanie parametrów kosztowych, przygotowanie wyceny, pełna automatyzacja procesu akceptacji wyceny przypomocy Teams oraz przekazywanie wycenionej oferty do handlowca",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-40"
+  },
+  {
+   "prefix": "026",
+   "akronim": "Invoicing",
+   "nazwa": "Fakturowanie klientów niestandardowych",
+   "status": "done",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "BOK"
+   ],
+   "kategoria": "Rozliczenia",
+   "opis": "ADAM",
+   "trigger": "",
+   "systemy": [
+    "SharePoint",
+    "Power Automate Cloud",
+    "Excel",
+    "Fabric (SQL)",
+    "Dataverse",
+    "Outlook (e-mail)",
+    "IRIS",
+    "Power Apps",
+    "Word"
+   ],
+   "developer": [
+    "Wojciechowski Adam"
+   ],
+   "wlasciciel": [
+    "Byczek Renata"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-41"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Kampanie",
+   "opis": "paweł, adam",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "nie ma potrzeby biznesowej teraz",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-45"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "on_hold",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "CRM"
+   ],
+   "kategoria": "Ofertowanie",
+   "opis": "paweł, adam",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "nie ma przedłużenia umowy z Optimal",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-46"
+  },
+  {
+   "prefix": "004",
+   "akronim": "Prowizje",
+   "nazwa": "Automatyzacja procesu naliczania prowizji",
+   "status": "in_progress",
+   "rozwiazanie": "Apka",
+   "dzial": [
+    "Sprzedaż",
+    "Finansowy",
+    "BOK"
+   ],
+   "kategoria": "Prowizje",
+   "opis": "Na podstawie danych z SB Krystek zasila Fabrica, flow wyciąga umowy zewryfikowane warunkowo lub pozytywnie w danym miesiącu; Na podstawie masy marży per broker wyliczany i przypisywany jest wskaźnik IPBM do każdej umowy. Następnie na pdostawie umów z danego miesiąca (zweryfikowanych pozytywnie) wyliczana jest pierwsza transza. Dla każdej umowy, dla której mamy IPBM (czyli zweryfikowana warunkowo lub pozytywnie) sprawdzamy czy istenieje opłacona faktura, jeśli tak to wyliczamy dla niej drugą transzę. \nEfektem pierwszej i drugiej transzy jest wygenerowanie pliku i dopisanie prowizji do tabeli (DV).",
+   "trigger": "raz w miesiącu",
+   "systemy": [
+    "Fabric (SQL)",
+    "Dataverse",
+    "Salesbook",
+    "Power Automate Cloud"
+   ],
+   "developer": [
+    "Bus Przemysław",
+    "Mazurkiewicz Adrian"
+   ],
+   "wlasciciel": [
+    "Sabiło Wioletta",
+    "Przyborowska Natalia",
+    "E2V Piotr Sokołowski"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V/Shared Documents/IT/Automation/Automation Docs/004_Prowizje",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-47"
+  },
+  {
+   "prefix": "002",
+   "akronim": "ImportUmow",
+   "nazwa": "Import umów FIX i FLEX z SB do Iris",
+   "status": "done",
+   "rozwiazanie": "CRM + Billing",
+   "dzial": [
+    "BOK"
+   ],
+   "kategoria": "Umowy",
+   "opis": "Po zmianie statusu wątku w SB pobierane są dane o dokumencie umowy poprzez api. Następnie sprawdzany jest typ umowy i jeśli jest to produkt FIX lub FLEX, to wypełniane są templatki do importu klienta, PPE i umowy, które importowane są do Irisa.",
+   "trigger": "HTTP",
+   "systemy": [
+    "Salesbook",
+    "IRIS",
+    "Dataverse",
+    "Excel",
+    "Power Automate Cloud",
+    "Power Automate Desktop"
+   ],
+   "developer": [
+    "Barejka Agata",
+    "Bus Przemysław"
+   ],
+   "wlasciciel": [
+    "Sońta Małgorzata",
+    "Tarasewicz Agnieszka"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V/Shared Documents/IT/Automation/Automation Docs/002_ImportUmow",
+   "komentarz": "Obecnie rozwiązanie jest przerabiane tak, aby było niezależne od Dataverse (przekazywanie danych odczytanych z SB bezpośrednio przez json, zamiast wpisywania do DV);\nImport FLEX obecnie na testach.\n\nUPDATE WR 20.10.2025: \nNa prod (e2V) i test srodowiskach sa rózne wersje projektu, polecam zwrocic uwage!",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-48"
+  },
+  {
+   "prefix": "005",
+   "akronim": "RUS",
+   "nazwa": "Rozliczanie Ujemnego Salda",
+   "status": "done",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "Wytwórcy"
+   ],
+   "kategoria": "Wytwórcy",
+   "opis": "Automat odczytuje (SQL): cenę TGEBase z ubiegłego miesiąca; cenę z faktury dla danego PPE, produkcję dla PPE oraz produkcję z wyzerowanymi wartościami, w przypadku cen ujemnych.\nTymi danymi wypełnia templatki w excelu (desktop) i uploaduje je na Sharepoint. Następnie, po ręcznym wysłaniu tych plików (przez Sylwię), drugie flow odczytuje wypełnione pliki i na podstawie tych danych tworzy zbiorczy excel dla wszystkich ppe.",
+   "trigger": "keyword na teams",
+   "systemy": [
+    "Power Automate Cloud",
+    "Power Automate Desktop",
+    "SharePoint",
+    "Excel",
+    "Fabric (SQL)"
+   ],
+   "developer": [
+    "Barejka Agata"
+   ],
+   "wlasciciel": [
+    "Cielemęcka Sylwia"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "1 uruchomienie w miesiącu każdego z botów (1 x cloud z 1 excelem na ppe; 1 x cloud tworzący excel zbiorczy).",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-49"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "GlobemaForecasts",
+   "status": "deprecated",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "Proces ładuje dane dotyczące prognozy generacji energii elektrycznej wykorzystując bibliotekę office365-REST-python-client. Dane pochodzą od dostawcy Globema i są przechowywane w plikach CSV w określonych katalogach SharePoint.",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-5"
+  },
+  {
+   "prefix": "006",
+   "akronim": "IrisCheck",
+   "nazwa": "Sprawdzanie poprawności danych w Iris",
+   "status": "deprecated",
+   "rozwiazanie": "Do wycofania",
+   "dzial": [
+    "Finansowy"
+   ],
+   "kategoria": "Poprawność danych (Finanse)",
+   "opis": "Automat odczytuje dane płatników (wytwócy i prosumenci) w Iris (przez fabrica) i sprawdza w wykazie podatników VAT, czy NIP istnieje w wykazie, jeśli tak, to jaki ma status - czy jest to czynny podatnik VAT - i czy jego numer konta zgadza się z numerem, który jest w Iris.\nInformacje zapisywane są w pliku excel na Sharepoint (ekovoltis->IT).",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Power Automate Cloud",
+    "Excel",
+    "SharePoint",
+    "API Wykaz podatników VAT gov.pl",
+    "Fabric (SQL)"
+   ],
+   "developer": [
+    "Barejka Agata"
+   ],
+   "wlasciciel": [
+    "Sokołowski Piotr"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Ktore to solution - Agata? (WR)\nSprawdzenie Danych IRIS, env e2V test\n\nAutomat odpalany 2xmiesiąc (koniec & środek miesiąca)\n960 - tyle nipów sprawdzanych w 1 przebiegu\n\nPierwotne proponowane rozwiązanie (SharePoint): „Nie używane”",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-50"
+  },
+  {
+   "prefix": "007",
+   "akronim": "AKDW",
+   "nazwa": "Automatyczne komunikaty do wytwórców",
+   "status": "done",
+   "rozwiazanie": "Billing + Portal klienta",
+   "dzial": [
+    "Wytwórcy"
+   ],
+   "kategoria": "",
+   "opis": "Automat sprawdza ceny na dzień następny i jeśli istnieją ceny niższe niż limit podany przez Wytwórców, to dla każdej jednostki wytwórczej, zgłoszonej przez dział Wytwórców, wysyła powiadomienie (mail i sms) z informacją o godzinach zalecenia wyłączenia.\nDział wytwórców podaje nr telefonu i adres email dla jednostki w aplikacji Origination w PowerApps",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Fabric (SQL)",
+    "Power Apps",
+    "Outlook",
+    "Power Automate Cloud",
+    "Bramka SMS",
+    "Dataverse"
+   ],
+   "developer": [
+    "Barejka Agata"
+   ],
+   "wlasciciel": [
+    "Łaszkiewicz Marek"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V/Shared Documents/IT/Automation/Automation Docs/007",
+   "komentarz": "uruchamiany codziennie, więc ok. 30/msc; ilość odbiorców - no data; wysyłka powiadomień zależna bezpośrednio od cen RDN",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-51"
+  },
+  {
+   "prefix": "T01",
+   "akronim": "APORT",
+   "nazwa": "Portfolio Automatyzacji",
+   "status": "done",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Inne"
+   ],
+   "kategoria": "Techniczny",
+   "opis": "Automatyzacja portfolio projektów oparta na liście SharePointowej. Upload danych do Grafana SQL database.",
+   "trigger": "SharePoint",
+   "systemy": [
+    "SharePoint",
+    "Power Automate Cloud",
+    "Outlook",
+    "Fabric (SQL)"
+   ],
+   "developer": [
+    "Rogman Wojciech"
+   ],
+   "wlasciciel": [
+    "Kaszta Michał"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V/Shared Documents/IT/Automation/Automation Docs/T01",
+   "komentarz": "Pierwotne proponowane rozwiązanie (SharePoint): „NA”",
+   "e2v": false,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-52"
+  },
+  {
+   "prefix": "019",
+   "akronim": "WIRE",
+   "nazwa": "Wysyłka danych na maila z raportów WIRE: Raport Handlowy (RH) i Raport Handlowy Korygujący (RHK)",
+   "status": "done",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "Trading"
+   ],
+   "kategoria": "",
+   "opis": "Wysyłka danych na maila z raportów WIRE: Raport Handlowy (RH) i Raport Handlowy Korygujący (RHK). Przekazywanie plików z raportu WIRE do Weroniki Tarnik",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Outlook",
+    "Power Automate Desktop",
+    "Power Automate Cloud",
+    "IRIS",
+    "FTP"
+   ],
+   "developer": [
+    "Bus Przemysław",
+    "Rogman Wojciech"
+   ],
+   "wlasciciel": [
+    "Pietraszewski Marcin",
+    "Tarnik Weronika"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Pierwotne proponowane rozwiązanie (SharePoint): „Billing/ integracja z WIRE”",
+   "e2v": true,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-53"
+  },
+  {
+   "prefix": "013",
+   "akronim": "SOGLsms",
+   "nazwa": "Autentykacja SMS",
+   "status": "done",
+   "rozwiazanie": "Apka",
+   "dzial": [
+    "Wytwórcy"
+   ],
+   "kategoria": "SOGL",
+   "opis": "TEST Robot odczytuje treść SMS i przekazuje ją na czat na teams (wiadomość zawiera kod do logowania na platformy Enea i PGE - te same, co w automacie sogl). Robot wywolywany jest slowem kluczowym na Teams.",
+   "trigger": "MS Teams (Keyword)",
+   "systemy": [
+    "Bramka SMS",
+    "MS Teams"
+   ],
+   "developer": [
+    "Barejka Agata"
+   ],
+   "wlasciciel": [
+    "Cielemęcka Sylwia"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-54"
+  },
+  {
+   "prefix": "014",
+   "akronim": "eBOKmail",
+   "nazwa": "eBOK wysyłka maili powitalnych",
+   "status": "done",
+   "rozwiazanie": "eBOK",
+   "dzial": [
+    "BOK"
+   ],
+   "kategoria": "",
+   "opis": "Wysyłka maili o e-BOKu w pierwszy poniedziałek miesiąca.",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Fabric (SQL)",
+    "Power Automate Cloud",
+    "Outlook (e-mail)",
+    "SharePoint"
+   ],
+   "developer": [
+    "Barejka Agata"
+   ],
+   "wlasciciel": [
+    "Świętochowska Natalia"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "uruchomione, działa, konieczność dodania raportowania i przeniesienia na ekovoltis. (WR)",
+   "e2v": false,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-55"
+  },
+  {
+   "prefix": "015",
+   "akronim": "CSIRE",
+   "nazwa": "CSIRE",
+   "status": "uat",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "Sprzedaż"
+   ],
+   "kategoria": "",
+   "opis": "",
+   "trigger": "",
+   "systemy": [],
+   "developer": [
+    "Wojciechowski Adam",
+    "Barejka Agata",
+    "Rogman Wojciech"
+   ],
+   "wlasciciel": [
+    "Wojciechowski Adam"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V/Shared Documents/IT/Automation/Automation Docs/015_CSIRE",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-56"
+  },
+  {
+   "prefix": "016",
+   "akronim": "UWBroker",
+   "nazwa": "UmowyWeryfikacjaDlaBrokerów",
+   "status": "deprecated",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Sprzedaż"
+   ],
+   "kategoria": "",
+   "opis": "",
+   "trigger": "",
+   "systemy": [],
+   "developer": [
+    "Wojciechowski Adam"
+   ],
+   "wlasciciel": [],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-57"
+  },
+  {
+   "prefix": "017",
+   "akronim": "AKDWT",
+   "nazwa": "Automatyczne komunikaty do wytwórców - Trading",
+   "status": "done",
+   "rozwiazanie": "Portal klienta",
+   "dzial": [
+    "Trading",
+    "Wytwórcy"
+   ],
+   "kategoria": "",
+   "opis": "Automat sprawdza ceny na dzień następny i jeśli istnieją ceny niższe niż limit podany przez Wytwórców, to dla każdej jednostki wytwórczej, zgłoszonej przez dział Wytwórców, dodaje informację o jednostce do aplikacji Tradingu.\nPo akceptacji wysyłki powiadomienia przez Trading powiadomienie jest wysyłane do wytwórcy.",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Power Automate Cloud",
+    "Power Apps",
+    "Outlook (e-mail)",
+    "Bramka SMS",
+    "MS Teams",
+    "Dataverse"
+   ],
+   "developer": [
+    "Barejka Agata"
+   ],
+   "wlasciciel": [
+    "Łaszkiewicz Marek",
+    "Gieras Maciej"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Pomyśleć nad tym jak zmusić wytwórców do założenia konta na portalu",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-58"
+  },
+  {
+   "prefix": "018",
+   "akronim": "SAPalert",
+   "nazwa": "Wysyłka komunikatu na Teams o fakturach niezaimportowanych do SAP",
+   "status": "done",
+   "rozwiazanie": "Zostaje do migracji SAP",
+   "dzial": [
+    "Finanse"
+   ],
+   "kategoria": "SAP",
+   "opis": "Piotr Sokołowski chce codziennie dostawać na Teams komunikat o wszystkich fakturach niezaimportowanych do SAP na podstawie najbardziej aktualnego statusu innego niż sukces. Wiadomość będzie przesyłana z konta technicznego e2vitservice na dedykowaną konwersację grupową na Teams. Ułatwi to monitorowanie przepływu dokumentów księgowych między systemami oraz reagowanie na występujące przypadki błędów. Przygotowany automat będzie uruchamiał się codziennie według ustalonego z Działem Finansów harmonogramu. Raport nie wyśle się w przypadku braku niezaimportowanych faktur.\n\nwymagane pola\n\nNumerFaktury | System | DataWystawienia | Status | IDOCNo | DocNo\n\npropozycja procesu\n\nquery do niezaimportowanych faktur → logika weryfikacyjna (czy obecne rekordy) → komunikat na Teams",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Power Automate Cloud",
+    "Fabric (SQL)",
+    "MS Teams"
+   ],
+   "developer": [
+    "Motek Krystian"
+   ],
+   "wlasciciel": [
+    "Sokołowski Piotr"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Pierwotne proponowane rozwiązanie (SharePoint): „zostaje dopóki nie fakturujemy się w SAPIE , DATA”",
+   "e2v": false,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-59"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "PipelineDataverse",
+   "status": "done",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "przenoszenie danych z wybranych tabel w Dataverse do lakehouse ekovoltis",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-6"
+  },
+  {
+   "prefix": "020",
+   "akronim": "CCRMT",
+   "nazwa": "Triggery do CCRM",
+   "status": "done",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "IT"
+   ],
+   "kategoria": "Dataverse",
+   "opis": "Triggery na fakturach i encjach powiązanych z nią, następnie wysłanie ID encji do API CCRM.",
+   "trigger": "HTTP",
+   "systemy": [
+    "Dataverse",
+    "Power Automate Cloud"
+   ],
+   "developer": [
+    "Mazurkiewicz Adrian"
+   ],
+   "wlasciciel": [
+    "Drabowicz Mateusz",
+    "Kaszta Michał"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-61"
+  },
+  {
+   "prefix": "021",
+   "akronim": "ORI",
+   "nazwa": "Origination",
+   "status": "done",
+   "rozwiazanie": "Billing + Portal klienta",
+   "dzial": [
+    "Finanse"
+   ],
+   "kategoria": "",
+   "opis": "Fakturki... /do uzupełnienia",
+   "trigger": "HTTP",
+   "systemy": [
+    "Power Automate Cloud",
+    "Dataverse",
+    "Power Apps",
+    "Outlook (e-mail)"
+   ],
+   "developer": [
+    "Wojciechowski Adam"
+   ],
+   "wlasciciel": [],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-62"
+  },
+  {
+   "prefix": "022",
+   "akronim": "ORIR",
+   "nazwa": "Origination report",
+   "status": "done",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "Finanse"
+   ],
+   "kategoria": "",
+   "opis": "Raport wiekowania należności wywoływany z przycisku widoczny na okresach rozliczeniowych.",
+   "trigger": "HTTP",
+   "systemy": [
+    "Power Automate Cloud",
+    "Power Apps",
+    "Dataverse"
+   ],
+   "developer": [
+    "Mazurkiewicz Adrian"
+   ],
+   "wlasciciel": [],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-63"
+  },
+  {
+   "prefix": "023",
+   "akronim": "EDISON",
+   "nazwa": "Obsługa grafików od Edison",
+   "status": "in_progress",
+   "rozwiazanie": "Billing + Portal klienta",
+   "dzial": [
+    "Wytwórcy",
+    "Trading"
+   ],
+   "kategoria": "Sharepoint",
+   "opis": "Pozyskiwanie grafików od klienta Edison, które są wysyłane na maila do trading. Zapis pliku na sharepoint. API do przenoszenia plików do archiwum (request wysyłany przez Fabric).",
+   "trigger": "E-mail",
+   "systemy": [
+    "SharePoint",
+    "Power Automate Cloud"
+   ],
+   "developer": [
+    "Wojciechowski Adam"
+   ],
+   "wlasciciel": [
+    "Łaszkiewicz Marek"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-64"
+  },
+  {
+   "prefix": "024",
+   "akronim": "PZS",
+   "nazwa": "Zmiany statusów PZS w IRIS",
+   "status": "deprecated",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "BOK"
+   ],
+   "kategoria": "PZS",
+   "opis": "Automatyczne zmiany statusów PPE z różnych PWI. Rekordy tworzone są w tabeli \"eko_pzs_status\", następnie na ich podstawie jest zmiana statusu w IRIS.",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Power Automate Cloud",
+    "Power Automate Desktop",
+    "IRIS",
+    "Fabric (SQL)",
+    "OneDrive"
+   ],
+   "developer": [
+    "Mazurkiewicz Adrian"
+   ],
+   "wlasciciel": [
+    "Grzymkowska Małgorzata"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Pierwotne proponowane rozwiązanie (SharePoint): „Billing (CSIRE)”",
+   "e2v": true,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": true,
+   "instrukcja": "",
+   "id": "sp-65"
+  },
+  {
+   "prefix": "025",
+   "akronim": "DOWNTIME",
+   "nazwa": "Energy downtime AI",
+   "status": "done",
+   "rozwiazanie": "Portal klienta",
+   "dzial": [
+    "Wytwórcy"
+   ],
+   "kategoria": "",
+   "opis": "Automatyczny odczyt maili od wytwórców, dodanie okresów wyłączeń do DV oraz komunikacja mailowa do odpowiednich zespołów. W procesie jest także odświeżenie dataflow \"downtime periods\".",
+   "trigger": "wpływ maila od określonego nadawcy, z określonym tytułem",
+   "systemy": [
+    "Power Automate Cloud",
+    "Outlook (e-mail)",
+    "AI Builder",
+    "Fabric (SQL)"
+   ],
+   "developer": [
+    "Mazurkiewicz Adrian"
+   ],
+   "wlasciciel": [
+    "Pietraszewski Marcin"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": true,
+   "solution": true,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-66"
+  },
+  {
+   "prefix": "027",
+   "akronim": "PIF",
+   "nazwa": "Production Installations to Forecasting",
+   "status": "done",
+   "rozwiazanie": "Billing",
+   "dzial": [],
+   "kategoria": "",
+   "opis": "",
+   "trigger": "HTTP",
+   "systemy": [],
+   "developer": [
+    "Wojciechowski Adam"
+   ],
+   "wlasciciel": [],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-67"
+  },
+  {
+   "prefix": "028",
+   "akronim": "SALESORD",
+   "nazwa": "Synchronization of IRIS objects to Dataverse",
+   "status": "done",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "BOK"
+   ],
+   "kategoria": "",
+   "opis": "Solution zawierający wszystkie obiekty zapewniający synchrozację klientów, umów i punktów pomiarowych z IRIS.\nObiekty te służą rozliczeniom niestandardowym oraz dla Origination w zakresie definiowania nowych PPE.",
+   "trigger": "",
+   "systemy": [
+    "Power Automate Cloud",
+    "Power Apps",
+    "IRIS"
+   ],
+   "developer": [
+    "Wojciechowski Adam"
+   ],
+   "wlasciciel": [],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-68"
+  },
+  {
+   "prefix": "029",
+   "akronim": "TGE HTML",
+   "nazwa": "HTML Table Generation from the Deprecated TGE Website",
+   "status": "done",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "IT"
+   ],
+   "kategoria": "",
+   "opis": "Rynek dnia następnego. Generowanie pliku na podstawie danych z Fabric. Wygenerowany plik trafia na FTP, gdzie zahostowana jest strona https://ekovoltis.pl/tge/tge_20251001.html",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Power Automate Cloud",
+    "FTP",
+    "Fabric (SQL)"
+   ],
+   "developer": [
+    "Mazurkiewicz Adrian"
+   ],
+   "wlasciciel": [
+    "Kaszta Michał"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-69"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "PipelinePseApi",
+   "status": "done",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "łączy się z ogólnodostępnym REST API wystawionym przez PSE do pobierania danych o Krajowym Systemie Elektroenergetycznym",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-7"
+  },
+  {
+   "prefix": "030",
+   "akronim": "ImportPlik",
+   "nazwa": "Import Plików do Umowy",
+   "status": "uat",
+   "rozwiazanie": "CRM + Billing",
+   "dzial": [
+    "BOK"
+   ],
+   "kategoria": "Umowy",
+   "opis": "W ramach usprawnienia obiegu dokumentów należy zautomatyzować proces przesyłania załączników z systemu Salesbook (SB) do systemu IRIS. Chodzi o dokumenty powiązane z klientami, takie jak:\n\nUmowy\n\nPełnomocnictwa\n\nCertyfikaty\n\nDokumenty te, obecnie przechowywane w Salesbooku jako załączniki do kart klienta lub umowy, powinny być automatycznie przesyłane do systemu IRIS – do zakładki Dokumenty, wraz z odpowiednią kategoryzacją (np. umowa, pełnomocnictwo, certyfikat).\n\nDo pobierania plików należy wykorzystać funkcję download from link, zakładając, że Salesbook udostępnia URL-e do dokumentów przez API.",
+   "trigger": "",
+   "systemy": [],
+   "developer": [
+    "Rogman Wojciech",
+    "Mazurkiewicz Adrian"
+   ],
+   "wlasciciel": [
+    "Świętochowska Natalia"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-70"
+  },
+  {
+   "prefix": "031",
+   "akronim": "CORABES",
+   "nazwa": "Testowe API do integracji z CORAB ES",
+   "status": "uat",
+   "rozwiazanie": "Do analizy",
+   "dzial": [
+    "Inne"
+   ],
+   "kategoria": "",
+   "opis": "Na potrzeby integracji z CORAB ES wystawiamy testowe API do przesyłania do nich grafików energii, a od nich pozyskiwać dane z telemetrii obiektu.",
+   "trigger": "",
+   "systemy": [
+    "Power Automate Cloud"
+   ],
+   "developer": [
+    "Wojciechowski Adam"
+   ],
+   "wlasciciel": [
+    "Jagodziński Grzegorz"
+   ],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Pierwotne proponowane rozwiązanie (SharePoint): „Adam (?)”",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-71"
+  },
+  {
+   "prefix": "032",
+   "akronim": "KSIC",
+   "nazwa": "KSeF Invoice Mailer",
+   "status": "done",
+   "rozwiazanie": "Serwis",
+   "dzial": [
+    "Finanse",
+    "BOK"
+   ],
+   "kategoria": "",
+   "opis": "Serwis do wysyłania faktur i załączników w formie (.zip) do klientów. Dodatkowo generowana jest tabela z podsumowaniem faktur w wiadomości mailowej.\nUżywany przez DEV Team w systemie CCRM o odebraniu faktury z KSeF.\n\n\nURL:",
+   "trigger": "HTTP",
+   "systemy": [
+    "Power Automate Cloud",
+    "Outlook (e-mail)"
+   ],
+   "developer": [
+    "Mazurkiewicz Adrian"
+   ],
+   "wlasciciel": [],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-72"
+  },
+  {
+   "prefix": "033",
+   "akronim": "WIRE_RD",
+   "nazwa": "Grafiki Trading na Sharepoint",
+   "status": "done",
+   "rozwiazanie": "Do analizy",
+   "dzial": [
+    "Trading"
+   ],
+   "kategoria": "",
+   "opis": "Raport dobowe z WIRE są pobierane z serwera sFTP i kopiowane do katalogu RD na Sharepoint: Baza dokumentów Ekovoltis",
+   "trigger": "Harmonogram",
+   "systemy": [
+    "Power Automate Desktop",
+    "SharePoint",
+    "Power Automate Cloud"
+   ],
+   "developer": [
+    "Wojciechowski Adam"
+   ],
+   "wlasciciel": [],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "Pierwotne proponowane rozwiązanie (SharePoint): „Do analizy czy etrm to wchłonie”",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-74"
+  },
+  {
+   "prefix": "034",
+   "akronim": "Payments",
+   "nazwa": "Bank Statement Payment Settler",
+   "status": "deprecated",
+   "rozwiazanie": "Billing",
+   "dzial": [
+    "BOK"
+   ],
+   "kategoria": "",
+   "opis": "Automat, który parsuje surowe dane bankowe do wpłat i paruje je z fakturami w Dataverse.",
+   "trigger": "",
+   "systemy": [],
+   "developer": [
+    "Wierzchowski Adrian"
+   ],
+   "wlasciciel": [],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-75"
+  },
+  {
+   "prefix": "035",
+   "akronim": "GTC FILE",
+   "nazwa": "GTC Generate Bank Payment File for Invoices",
+   "status": "done",
+   "rozwiazanie": "Apka",
+   "dzial": [
+    "Finanse"
+   ],
+   "kategoria": "",
+   "opis": "Automatyczne generowanie pliku polecenia zapłaty dla GTC.",
+   "trigger": "",
+   "systemy": [],
+   "developer": [
+    "Wierzchowski Adrian"
+   ],
+   "wlasciciel": [],
+   "dokumentacja": "https://colpro.sharepoint.com/sites/E2V",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-76"
+  },
+  {
+   "prefix": "Cnn",
+   "akronim": "Cenniki",
+   "nazwa": "Cenniki",
+   "status": "done",
+   "rozwiazanie": "CRM + Billing",
+   "dzial": [
+    "dpia"
+   ],
+   "kategoria": "",
+   "opis": "",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": true,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-77"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "EnergySchedules",
+   "status": "done",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "Korzysta z Dataflow Gen2 do ładowania grafików spółek znajdujących się w katalogach SharePoint do lakehouse ekovoltis. Dane z grafików są następnie wykorzystywane do rozliczeń energii elektrycznej.",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-8"
+  },
+  {
+   "prefix": "",
+   "akronim": "",
+   "nazwa": "",
+   "status": "new",
+   "rozwiazanie": "Data",
+   "dzial": [
+    "Dane"
+   ],
+   "kategoria": "",
+   "opis": "Łączy się z usługą SFTP w celu pobrania plików XML z płatnościami zaksięgowanymi w systemie IFS. Załadowane pliki są następnie transformowane do docelowej tabeli w lakehouse ekovoltis.",
+   "trigger": "",
+   "systemy": [],
+   "developer": [],
+   "wlasciciel": [],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "sp-9"
+  },
+  {
+   "prefix": "SYN",
+   "akronim": "SYN",
+   "nazwa": "Synthos",
+   "status": "done",
+   "rozwiazanie": "Billing",
+   "dzial": [],
+   "kategoria": "",
+   "opis": "",
+   "trigger": "",
+   "systemy": [],
+   "developer": [
+    "Adrian Mazurkiewicz"
+   ],
+   "wlasciciel": [
+    "BOK + Trading"
+   ],
+   "dokumentacja": "",
+   "komentarz": "",
+   "e2v": false,
+   "raportowanie": false,
+   "solution": false,
+   "keyVault": false,
+   "instrukcja": "",
+   "id": "xbsazzktgsim33ur1agc"
+  }
+ ]
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "pp-support",
+  "displayName": "Wsparcie automatyzacji Power Platform",
+  "version": "0.1.0",
+  "description": "Wsparcie dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform: diagnoza odczytem, plan naprawy, wykonanie wyłącznie po jawnej akceptacji pracownika.",
+  "author": { "name": "Ekovoltis IT" },
+  "keywords": ["power-platform", "power-automate", "dataverse", "fabric", "sharepoint", "support"],
+  "defaultEnabled": false,
+  "userConfig": {
+    "dataverse_urls": {
+      "type": "string",
+      "multiple": true,
+      "title": "Adresy środowisk Dataverse",
+      "description": "Np. https://nazwa.crm4.dynamics.com (bez ukośnika na końcu)"
+    },
+    "pp_environment_ids": {
+      "type": "string",
+      "multiple": true,
+      "title": "ID środowisk Power Platform",
+      "description": "Identyfikatory środowisk z centrum administracyjnego Power Platform (GUID)"
+    },
+    "sharepoint_host": {
+      "type": "string",
+      "title": "Host SharePoint",
+      "description": "Np. colpro.sharepoint.com",
+      "default": "colpro.sharepoint.com"
+    },
+    "sharepoint_site": {
+      "type": "string",
+      "title": "Ścieżka witryny SharePoint do testu dostępu",
+      "description": "Np. /sites/BazaDokumentow (puste: witryna główna)",
+      "default": ""
+    },
+    "fabric_workspace_ids": {
+      "type": "string",
+      "multiple": true,
+      "title": "ID obszarów roboczych Fabric",
+      "description": "Opcjonalnie, do testu dostępu i diagnozy pipeline'ów"
+    },
+    "docs_dir": {
+      "type": "directory",
+      "title": "Katalog dokumentacji automatyzacji",
+      "description": "Lokalna kopia repozytorium dokumentacji (opcjonalnie, gdy będzie gotowa)",
+      "default": ""
+    },
+    "approval_ttl_min": {
+      "type": "number",
+      "title": "Ważność akceptacji planu (minuty)",
+      "description": "Po tym czasie wykonanie wymaga ponownej akceptacji",
+      "default": 60,
+      "min": 10,
+      "max": 240
+    }
+  }
+}

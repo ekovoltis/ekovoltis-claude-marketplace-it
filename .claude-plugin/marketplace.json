@@ -1,0 +1,14 @@
+{
+  "name": "ekovoltis-it",
+  "owner": {
+    "name": "Ekovoltis IT"
+  },
+  "description": "Pluginy Claude Code dla działu IT Ekovoltis, z uprawnieniami deweloperskimi. Dostęp wyłącznie dla zespołu IT.",
+  "plugins": [
+    {
+      "name": "pp-support",
+      "source": "./plugins/pp-support",
+      "description": "Wsparcie dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform: diagnoza odczytem, plan naprawy, wykonanie wyłącznie po jawnej akceptacji pracownika."
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Uruchamia hook w Pythonie. Gdy Pythona brak, konczy kodem 2,
+# co dla PreToolUse i UserPromptSubmit oznacza blokade (fail closed).
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT="$DIR/$1.py"
+for c in python3 python "py -3"; do
+  if $c -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >/dev/null 2>&1; then
+    exec $c "$SCRIPT"
+  fi
+done
+echo "pp-support: brak Pythona 3.9+, operacje zablokowane do czasu instalacji." >&2
+exit 2

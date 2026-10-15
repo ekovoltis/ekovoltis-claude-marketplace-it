@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Uruchamia ppcall.py dostepnym interpreterem Pythona (Linux, macOS, Git Bash na Windows).
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for c in python3 python "py -3"; do
+  if $c -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >/dev/null 2>&1; then
+    exec $c "$DIR/ppcall.py" "$@"
+  fi
+done
+echo "BLAD: pp-support wymaga Pythona 3.9 lub nowszego" >&2
+exit 1
