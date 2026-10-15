@@ -58,16 +58,30 @@ def _ppcall_path() -> str:
     return _norm_path(root.rstrip("/\\") + "/scripts/ppcall")
 
 
+def _mentions_ppcall(segment: str) -> bool:
+    text = re.sub(r"/+", "/", segment.replace("\\", "/").lower())
+    text = re.sub(r"(?<![\w.:])/([a-z])/", r"\1:/", text)
+    return _ppcall_path() in text
+
+
+def _is_shell(token: str) -> bool:
+    return re.sub(r"\.exe$", "", Path(token.replace("\\", "/")).name.lower()) in ("bash", "sh")
+
+
 def is_ppcall(tokens: list[str]) -> bool:
     """Tylko oryginalny ppcall z katalogu pluginu, nie plik o tej samej nazwie gdzie indziej."""
     if not tokens:
         return False
-    first = tokens[1] if tokens[0] in ("bash", "sh") and len(tokens) > 1 else tokens[0]
+    first = tokens[1] if _is_shell(tokens[0]) and len(tokens) > 1 else tokens[0]
     return _norm_path(first) == _ppcall_path()
 
 
-def split_segments(cmd: str) -> list[str]:
-    """Dzieli polecenie na ;, &&, ||, |, & i nowe linie, ale nie wewnatrz cudzyslowow."""
+def split_segments(cmd: str, dialect: str = "bash") -> list[str]:
+    """Dzieli polecenie na ;, &&, ||, |, & i nowe linie, ale nie wewnatrz cudzyslowow.
+
+    W PowerShell znakiem ucieczki jest backtick, a backslash jest zwyklym znakiem.
+    """
+    escape = "`" if dialect == "powershell" else "\\"
     segs, buf, quote, i = [], [], None, 0
     while i < len(cmd):
         ch = cmd[i]
@@ -75,8 +89,10 @@ def split_segments(cmd: str) -> list[str]:
             buf.append(ch)
             if ch == quote:
                 quote = None
-            elif ch == "\\" and quote == '"' and i + 1 < len(cmd):
+            elif ch == escape and quote == '"' and i + 1 < len(cmd):
                 buf.append(cmd[i + 1]); i += 1
+        elif ch == "`" and dialect == "powershell" and i + 1 < len(cmd):
+            buf.append(ch); buf.append(cmd[i + 1]); i += 1
         elif ch in ("'", '"'):
             quote = ch; buf.append(ch)
         elif ch in ";|&\n":
@@ -91,23 +107,66 @@ def split_segments(cmd: str) -> list[str]:
 
 
 def ppcall_args(tokens: list[str]) -> list[str]:
-    return tokens[2:] if tokens[0] in ("bash", "sh") else tokens[1:]
+    return tokens[2:] if _is_shell(tokens[0]) else tokens[1:]
 
 
+def _tokenize_powershell(segment: str) -> list[str]:
+    tokens, buf, quote, started, i = [], [], None, False, 0
+    while i < len(segment):
+        ch, nxt = segment[i], segment[i + 1:i + 2]
+        if quote == "'":
+            if ch == "'" and nxt == "'":
+                buf.append("'"); i += 1
+            elif ch == "'":
+                quote = None
+            else:
+                buf.append(ch)
+        elif quote == '"':
+            if ch == "`" and nxt:
+                buf.append(nxt); i += 1
+            elif ch == '"' and nxt == '"':
+                buf.append('"'); i += 1
+            elif ch == '"':
+                quote = None
+            else:
+                buf.append(ch)
+        elif ch == "`" and nxt:
+            buf.append(nxt); started = True; i += 1
+        elif ch in ("'", '"'):
+            quote, started = ch, True
+        elif ch.isspace():
+            if started:
+                tokens.append("".join(buf)); buf, started = [], False
+        else:
+            buf.append(ch); started = True
+        i += 1
+    if started:
+        tokens.append("".join(buf))
+    return tokens
 
-def tokenize(segment: str) -> list[str]:
+
+def tokenize(segment: str, dialect: str = "bash") -> list[str]:
+    if dialect == "powershell":
+        return _tokenize_powershell(segment)
     try:
         return shlex.split(segment, posix=True)
     except ValueError:
         return segment.split()
 
 
-def classify_segment(seg: str, cwd: str) -> tuple[str | None, str]:
+def out_targets(args: list[str]) -> list[str]:
+    return [args[i + 1] for i, a in enumerate(args[:-1]) if a == "--out"]
+
+
+def classify_segment(seg: str, cwd: str, dialect: str = "bash") -> tuple[str | None, str]:
     """Zwraca (decyzja, powod). None = brak decyzji (zwykle uprawnienia Claude Code)."""
     s = seg.strip()
     if not s:
         return None, ""
-    tokens = tokenize(s)
+    tokens = tokenize(s, dialect)
+    if not is_ppcall(tokens) and _mentions_ppcall(s):
+        return "deny", ('ppcall uruchamiaj bezposrednio: "${CLAUDE_PLUGIN_ROOT}/scripts/ppcall" <komenda>, '
+                        "bez zmiennych, eval, bash -c ani python ppcall.py.")
     if is_ppcall(tokens):
         args = ppcall_args(tokens)
         sub = args[0] if args else ""
@@ -119,6 +178,14 @@ def classify_segment(seg: str, cwd: str) -> tuple[str | None, str]:
                 return "deny", reason
             return "ask", (f"ZMIANA W SRODOWISKU. Zgloszenie {args[1]}, krok {args[2]}: {step['opis']} | "
                            f"{C.step_summary(step)}. Zatwierdz tylko jesli to dokladnie zaakceptowany krok.")
+        if sub == "get":
+            for target in out_targets(args):
+                problem = C.out_path_problem(cwd, target)
+                if problem:
+                    return "deny", problem
+                decision, reason = guard_write(str(Path(cwd) / target))
+                if decision:
+                    return decision, reason
         if sub in {"get", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke", "config", ""}:
             return "allow", "pp-support: operacja tylko do odczytu lub na lokalnych plikach zgloszenia"
         return "deny", f"Nieznana komenda ppcall: {sub}"
@@ -162,9 +229,9 @@ def classify_segment(seg: str, cwd: str) -> tuple[str | None, str]:
 RANK = {"deny": 3, "ask": 2, None: 1, "allow": 0}
 
 
-def guard_command(cmd: str, cwd: str) -> tuple[str | None, str]:
-    segments = split_segments(cmd)
-    decisions = [classify_segment(seg, cwd) for seg in segments] or [(None, "")]
+def guard_command(cmd: str, cwd: str, dialect: str = "bash") -> tuple[str | None, str]:
+    segments = split_segments(cmd, dialect)
+    decisions = [classify_segment(seg, cwd, dialect) for seg in segments] or [(None, "")]
     if len(segments) > 1 and any(d == "ask" for d, _ in decisions):
         return "deny", "ppcall exec uruchamiaj jako osobne polecenie, bez laczenia z innymi."
     worst = max(decisions, key=lambda d: RANK[d[0]])
@@ -208,7 +275,8 @@ def main() -> None:
         tin = data.get("tool_input", {}) or {}
         cwd = data.get("cwd") or os.getcwd()
         if tool in ("Bash", "PowerShell"):
-            decision, reason = guard_command(str(tin.get("command", "")), cwd)
+            dialect = "powershell" if tool == "PowerShell" else "bash"
+            decision, reason = guard_command(str(tin.get("command", "")), cwd, dialect)
         elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
             decision, reason = guard_write(str(tin.get("file_path") or tin.get("notebook_path") or ""))
         elif tool.startswith("mcp__") and MCP_SCOPE_RE.search(tool):

@@ -20,7 +20,7 @@ Cały ruch do Azure, Power Platform, Dataverse, SharePoint i Fabric idzie przez:
 | Komenda | Do czego |
 |---|---|
 | `rejestr <frazy>` | wyszukanie automatu w migawce rejestru |
-| `get "<url>" [--out plik] [--max-kb N]` | odczyt dowolnego API Microsoft z listy dozwolonych hostów |
+| `get "<url>" [--out zgloszenia/<ID>/plik] [--max-kb N]` | odczyt dowolnego API Microsoft z listy dozwolonych hostów; `--out` zapisuje tylko w katalogu zgłoszenia, nigdy do `plan.md` ani `wykonanie.jsonl` |
 | `plan-new <ID>` | założenie katalogu `zgloszenia/<ID>/` z `notatki.md` i `plan.md` |
 | `plan-check <ID>` | walidacja planu i wyliczenie skrótu do akceptacji |
 | `status <ID>` | stan planu, akceptacji i wykonanych kroków |
