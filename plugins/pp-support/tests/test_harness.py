@@ -32,7 +32,7 @@ FAILS: list[str] = []
 
 def hook(name: str, payload: dict) -> dict | None:
     r = subprocess.run([BASH, str(SCRIPTS / "run-py"), name], input=json.dumps(payload),
-                       capture_output=True, text=True, env=os.environ)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", env=os.environ)
     assert r.returncode in (0, 2), r.stderr
     return json.loads(r.stdout) if r.stdout.strip() else None
 
@@ -51,7 +51,7 @@ def expect(label: str, got, want) -> None:
 
 
 def ppcall(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([BASH, PPCALL, *args], cwd=WORK, capture_output=True, text=True, env=os.environ)
+    return subprocess.run([BASH, PPCALL, *args], cwd=WORK, capture_output=True, text=True, encoding="utf-8", errors="replace", env=os.environ)
 
 
 def prompt(text: str) -> dict | None:
@@ -198,7 +198,7 @@ print("7. Brak Pythona -> blokada")
 env = {"PATH": "/nonexistent", "HOME": str(Path.home())}
 if os.environ.get("SYSTEMROOT"):
     env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
-r = subprocess.run([BASH, str(SCRIPTS / "run-py"), "hook_guard"], input="{}", capture_output=True, text=True, env=env)
+r = subprocess.run([BASH, str(SCRIPTS / "run-py"), "hook_guard"], input="{}", capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
 expect("kod wyjscia przy braku Pythona", r.returncode, 2)
 
 print("8. ppcall get --out")
@@ -281,13 +281,26 @@ shutil.copytree(SCRIPTS, broken)
 
 def broken_hook(name: str, payload: dict) -> int:
     return subprocess.run([BASH, str(broken / "run-py"), name], input=json.dumps(payload),
-                          capture_output=True, text=True, env=os.environ).returncode
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", env=os.environ).returncode
 
 
 expect("PreToolUse przy wyjatku importu", broken_hook("hook_guard", {"tool_name": "Bash", "tool_input": {"command": "ls"}}), 2)
 expect("akceptacja przy awarii", broken_hook("hook_prompt", {"prompt": f"AKCEPTUJĘ INC-1 {h}"}), 2)
 expect("odwolanie przy awarii", broken_hook("hook_prompt", {"prompt": "ODWOŁUJĘ INC-1"}), 2)
 expect("zwykla wiadomosc przy awarii", broken_hook("hook_prompt", {"prompt": "Pomoz z flow"}), 0)
+
+print("11. Kodowanie: UTF-8 niezaleznie od konsoli (Windows cp1252)")
+cp1252 = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+r = subprocess.run([BASH, PPCALL, "plan-check", "INC-1"], cwd=WORK, capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", env=cp1252)
+expect("ppcall plan-check przy cp1252", r.returncode, 0)
+expect("ppcall: polskie znaki na wyjsciu", "AKCEPTUJĘ INC-1" in r.stdout, True)
+r = subprocess.run([BASH, str(SCRIPTS / "run-py"), "hook_prompt"], capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", env=cp1252,
+                   input=json.dumps({"prompt": "ODWOŁUJĘ INC-7", "cwd": str(WORK)}, ensure_ascii=False))
+expect("hook_prompt przy cp1252: kod", r.returncode, 0)
+expect("hook_prompt przy cp1252: odwolanie z polskimi znakami rozpoznane",
+       "INC-7" in json.dumps(json.loads(r.stdout or "{}"), ensure_ascii=False), True)
 
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
