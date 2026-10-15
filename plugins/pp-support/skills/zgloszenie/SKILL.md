@@ -1,6 +1,6 @@
 ---
 name: zgloszenie
-description: Obsługa zgłoszenia dotyczącego automatyzacji Power Platform razem z dyżurnym IT, od przyjęcia przez diagnozę i plan naprawy do wykonania po jawnej akceptacji pracownika. Używaj zawsze, gdy ktoś zgłasza, że automat, flow, robot PAD, pipeline Fabric, aplikacja Power Apps albo integracja z Dataverse lub SharePoint nie działa, działa źle, zatrzymał się, zdublował dane albo „coś nie przyszło”, także gdy podaje tylko kod (np. 007, AKDW), nazwę automatu, numer zgłoszenia z Jiry albo treść błędu. Także na: „sprawdź automat”, „dlaczego flow padł”, „napraw”, „ponów uruchomienie”, „wyłącz flow”.
+description: "Obsługa zgłoszenia dotyczącego automatyzacji Power Platform razem z dyżurnym IT, od przyjęcia przez diagnozę i plan naprawy do wykonania po jawnej akceptacji pracownika. Używaj zawsze, gdy ktoś zgłasza, że automat, flow, robot PAD, pipeline Fabric, aplikacja Power Apps albo integracja z Dataverse lub SharePoint nie działa, działa źle, zatrzymał się, zdublował dane albo „coś nie przyszło”, także gdy podaje tylko kod (np. 007, AKDW), nazwę automatu, numer zgłoszenia z Jiry albo treść błędu. Także na: „sprawdź automat”, „dlaczego flow padł”, „napraw”, „ponów uruchomienie”, „wyłącz flow”."
 ---
 
 # Obsługa zgłoszenia automatyzacji Power Platform
