@@ -40,7 +40,8 @@ Strażnik blokuje zapis do katalogu pluginu w sesji, w której plugin jest zała
 ## Zweryfikowane
 
 - `claude plugin validate --strict`: przechodzi.
-- `python3 tests/test_harness.py`: przechodzi (strażnik, walidacja planu, akceptacja, zmiana planu po akceptacji, wykonanie z podmienionym HTTP, odwołanie, brak Pythona).
+- `python3 tests/test_harness.py`: przechodzi na Linuksie i Windows (strażnik, walidacja planu, akceptacja, zmiana planu po akceptacji, wykonanie z podmienionym HTTP, odwołanie, brak Pythona, `ppcall get --out`, polecenia z PowerShell, awaria hooka).
+- Od 0.1.1: `ppcall get --out` zapisuje tylko w `zgloszenia/<ID>/` (bez `plan.md` i `wykonanie.jsonl`), sprawdzane w hooku i w ppcall. Każdy niezerowy kod hooka to odmowa; UserPromptSubmit przy awarii blokuje tylko wiadomości z akceptacją albo odwołaniem (decyzja Michała z 2026-10-15). Ścieżka do ppcall w innej formie niż bezpośrednie wywołanie (`bash -c`, zmienna, `python ppcall.py`) jest odrzucana.
 
 ## Do zweryfikowania na prawdziwym środowisku
 

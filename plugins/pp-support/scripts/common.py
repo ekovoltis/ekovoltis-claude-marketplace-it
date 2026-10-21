@@ -23,9 +23,13 @@ ID_RE = r"[A-Za-z0-9][A-Za-z0-9_-]{2,39}"
 
 # ---------------------------------------------------------------- sciezki
 
-def state_dir() -> Path:
+def state_base() -> Path:
     override = os.environ.get("PP_SUPPORT_STATE_DIR")  # tylko testy
-    base = Path(override) if override else Path.home() / ".claude" / STATE_DIR_NAME
+    return Path(override) if override else Path.home() / ".claude" / STATE_DIR_NAME
+
+
+def state_dir() -> Path:
+    base = state_base()
     base.mkdir(parents=True, exist_ok=True)
     (base / "akceptacje").mkdir(exist_ok=True)
     return base
@@ -37,6 +41,39 @@ def incident_dir(cwd: str | Path, incident_id: str) -> Path:
 
 def valid_id(incident_id: str) -> bool:
     return bool(re.fullmatch(ID_RE, incident_id or ""))
+
+
+RESERVED_INCIDENT_FILES = {"plan.md", "wykonanie.jsonl"}
+
+
+def out_path_problem(cwd: str | Path, path: str) -> str | None:
+    """Cel `ppcall get --out`: tylko plik w <cwd>/zgloszenia/<ID>/. Sprawdzaja hook i ppcall."""
+    if not path:
+        return "Brak sciezki --out."
+    if ":" in Path(path).name:  # strumienie NTFS (plik:strumien)
+        return "--out: niedozwolona nazwa pliku."
+    base = Path(cwd).expanduser().resolve()
+    target = Path(path).expanduser()
+    target = (target if target.is_absolute() else base / target).resolve()
+    where = f"--out: zapis tylko do pliku w {INCIDENTS_DIR_NAME}/<ID>/ w katalogu pracy."
+    try:
+        parts = target.relative_to((base / INCIDENTS_DIR_NAME).resolve()).parts
+    except ValueError:
+        return where
+    if len(parts) < 2 or not valid_id(parts[0]):
+        return where
+    # Windows pomija koncowe kropki i spacje: "plan.md." to ten sam plik co plan.md
+    if len(parts) == 2 and parts[1].rstrip(". ").lower() in RESERVED_INCIDENT_FILES:
+        return "--out: plan.md i wykonanie.jsonl nie moga byc nadpisane odpowiedzia HTTP."
+    if any(p.lower() == ".claude" for p in parts):
+        return "--out: zapis do katalogu .claude jest zablokowany."
+    for protected in (state_base(), PLUGIN_ROOT):
+        try:
+            if target.is_relative_to(protected.expanduser().resolve()):
+                return "--out: zapis do stanu akceptacji i kodu pluginu jest zablokowany."
+        except OSError:
+            return "--out: nie mozna zweryfikowac sciezki."
+    return None
 
 
 def now() -> dt.datetime:

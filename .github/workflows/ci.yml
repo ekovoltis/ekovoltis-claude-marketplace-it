@@ -27,17 +27,25 @@ jobs:
           done
 
   tests:
-    name: testy harnessu pp-support (Python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    name: testy harnessu pp-support (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 to minimum deklarowane w README pluginu
-        python: ["3.9", "3.13"]
+        include:
+          # 3.9 to minimum deklarowane w README pluginu
+          - { os: ubuntu-latest, python: "3.9" }
+          - { os: ubuntu-latest, python: "3.13" }
+          # dyzurni pracuja na Windows: Git Bash, sciezki C:\ i narzedzie PowerShell
+          - { os: windows-latest, python: "3.13" }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
-      - run: python3 tests/test_harness.py
+      - run: python tests/test_harness.py
+        shell: bash
         working-directory: plugins/pp-support
+        env:
+          # bez tego subprocess na Windows moze trafic na bash z WSL w System32
+          PP_TEST_BASH: ${{ runner.os == 'Windows' && 'C:/Program Files/Git/bin/bash.exe' || '' }}
