@@ -96,6 +96,26 @@ claude --plugin-dir ./pp-support
 
 Plugin ma `defaultEnabled: false`, bo jego hooki działają w całej sesji. Po instalacji z marketplace włącz go świadomie w sesjach dyżurnych: `claude plugin enable pp-support`, i uzupełnij ustawienia w `/plugin` (adresy Dataverse, ID środowisk, host i witryna SharePoint, obszary Fabric).
 
+## Przygotowanie stanowiska dyżurnego na Windows
+
+1. Osobny folder dyżurny poza OneDrive i poza repozytoriami, np. `C:\Users\<login>\pp-dyzur`. Trafiają tam notatki ze zgłoszeń, czyli także dane klientów.
+2. Instalacja w zakresie tego folderu, żeby hooki działały tylko w sesjach dyżurnych:
+   ```bash
+   claude plugin marketplace add ekovoltis/ekovoltis-claude-marketplace-it
+   claude plugin install pp-support@ekovoltis-it --scope local --config dataverse_urls=https://<org>.crm4.dynamics.com --config pp_environment_ids=<GUID> --config sharepoint_host=<tenant>.sharepoint.com --config sharepoint_site=/sites/<Witryna>
+   claude plugin enable pp-support@ekovoltis-it --scope local
+   ```
+3. Osobna konfiguracja Azure CLI, żeby logowanie dyżurne nie zmieniało `az` w innej pracy. W `<folder>\.claude\settings.local.json` dopisz `"env": {"AZURE_CONFIG_DIR": "C:\\Users\\<login>\\.azure-pp-dyzur"}`.
+4. Logowanie wykonuje człowiek, w PowerShell, z tą samą zmienną:
+   ```bash
+   $env:AZURE_CONFIG_DIR = 'C:\Users\<login>\.azure-pp-dyzur'
+   az config set core.enable_broker_on_windows=false
+   az login --tenant <tenant-id> --allow-no-subscriptions
+   pac auth create --name <nazwa> --environment https://<org>.crm4.dynamics.com
+   ```
+   Wyłączenie menedżera kont Windows (WAM) sprawia, że logowanie idzie przez przeglądarkę i nie dodaje konta do systemu. `--allow-no-subscriptions` jest potrzebne dla kont bez subskrypcji Azure.
+5. Sesja Claude Code otwarta w folderze dyżurnym, potem `/pp-support:sprawdz-dostepy`.
+
 Testy harnessu, bez dostępu do chmury:
 
 ```bash

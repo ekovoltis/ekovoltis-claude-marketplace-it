@@ -147,6 +147,10 @@ def cmd_dostepy(_args: list[str]) -> None:
         results.append({"obszar": obszar, "test": test, "ok": ok,
                         "szczegoly": szczegoly, "podpowiedz": podpowiedz})
 
+    problems = C.config_problems(cfg)
+    for p in problems:
+        add("Konfiguracja", "ustawienia pluginu", False, p, "Popraw ustawienie w /plugin i uruchom nowa sesje")
+
     # Azure CLI
     az = shutil.which("az")
     if not az:
@@ -210,7 +214,8 @@ def cmd_dostepy(_args: list[str]) -> None:
               "Tabela flowruns moze byc niedostepna w tym srodowisku albo wylaczona")
     host = cfg.get("sharepoint_host") or ""
     site = (cfg.get("sharepoint_site") or "").strip()
-    if host:
+    # Przy blednych ustawieniach SharePoint test pokazalby blad uprawnien zamiast bledu konfiguracji.
+    if host and not any(p.startswith("sharepoint") for p in problems):
         graph_site = f"https://graph.microsoft.com/v1.0/sites/{host}" + (f":{site}" if site else "")
         probe("SharePoint", "Graph: witryna", graph_site,
               "Token Azure CLI moze nie miec zakresu Sites.Read.All, rozwazyc wlasna rejestracje aplikacji")

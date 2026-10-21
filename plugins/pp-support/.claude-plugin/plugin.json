@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "pp-support",
   "displayName": "Wsparcie automatyzacji Power Platform",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Wsparcie dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform: diagnoza odczytem, plan naprawy, wykonanie wyłącznie po jawnej akceptacji pracownika.",
   "author": { "name": "Ekovoltis IT" },
   "keywords": ["power-platform", "power-automate", "dataverse", "fabric", "sharepoint", "support"],

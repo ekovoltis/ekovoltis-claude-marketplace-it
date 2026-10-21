@@ -302,6 +302,34 @@ expect("hook_prompt przy cp1252: kod", r.returncode, 0)
 expect("hook_prompt przy cp1252: odwolanie z polskimi znakami rozpoznane",
        "INC-7" in json.dumps(json.loads(r.stdout or "{}"), ensure_ascii=False), True)
 
+print("12. Ustawienia pluginu: konwersja sciezek Git Bash i walidacja")
+import common as C  # noqa: E402
+expect("site_path: wartosc znieksztalcona przez Git Bash",
+       C.site_path("C:/Users/x/AppData/Local/Programs/Git/sites/Synthos-Ekovoltis"), "/sites/Synthos-Ekovoltis")
+expect("site_path: /teams/ z backslashami", C.site_path("C:\\Program Files\\Git\\teams\\Zespol\\"), "/teams/Zespol")
+expect("site_path: poprawna wartosc bez zmian", C.site_path("/sites/Synthos-Ekovoltis"), "/sites/Synthos-Ekovoltis")
+expect("site_path: pusta", C.site_path(""), "")
+ok_cfg = {**C.DEFAULT_CONFIG, "dataverse_urls": ["https://ekovoltis.crm4.dynamics.com"],
+          "sharepoint_site": "/sites/Synthos-Ekovoltis"}
+expect("config_problems: poprawne ustawienia", C.config_problems(ok_cfg), [])
+expect("config_problems: witryna bez /", len(C.config_problems({**ok_cfg, "sharepoint_site": "sites/X"})), 1)
+expect("config_problems: Dataverse po http",
+       len(C.config_problems({**ok_cfg, "dataverse_urls": ["http://ekovoltis.crm4.dynamics.com"]})), 1)
+expect("config_problems: obcy host SharePoint",
+       len(C.config_problems({**ok_cfg, "sharepoint_host": "evil.example.com"})), 1)
+opt = {**os.environ, "CLAUDE_PLUGIN_OPTION_SHAREPOINT_SITE": "/sites/Synthos-Ekovoltis",
+       "CLAUDE_PLUGIN_OPTION_DATAVERSE_URLS": "https://ekovoltis.crm4.dynamics.com"}
+r = subprocess.run([BASH, str(SCRIPTS / "run-py"), "hook_session_start"], input="{}", capture_output=True,
+                   text=True, encoding="utf-8", errors="replace", env=opt)
+expect("SessionStart przez run-py: kod", r.returncode, 0)
+expect("SessionStart przez run-py: witryna dociera bez zmian (Git Bash)",
+       json.loads((TMP / "state/config.json").read_text(encoding="utf-8"))["sharepoint_site"], "/sites/Synthos-Ekovoltis")
+expect("SessionStart: brak bledu ustawien", "Blad ustawien" in r.stdout, False)
+r = subprocess.run([BASH, str(SCRIPTS / "run-py"), "hook_session_start"], input="{}", capture_output=True,
+                   text=True, encoding="utf-8", errors="replace",
+                   env={**opt, "CLAUDE_PLUGIN_OPTION_DATAVERSE_URLS": "http://zly.example.com"})
+expect("SessionStart: blad ustawien zgloszony", "Blad ustawien pluginu: dataverse_urls" in r.stdout, True)
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

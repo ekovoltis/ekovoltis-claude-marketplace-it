@@ -1,6 +1,6 @@
 {
  "zrodlo": "Portfolio Automatyzacji (artefakt claude.ai 9MZTkmB9katvHcPxBTnYaJ), kolekcja automations",
- "stan_na": "2026-10-15",
+ "stan_na": "2026-10-21",
  "uwaga": "Migawka tylko do odczytu. Zrodlo prawdy nie zostalo jeszcze ustalone.",
  "pozycje": [
   {
@@ -1973,11 +1973,21 @@
    "nazwa": "Synthos",
    "status": "done",
    "rozwiazanie": "Billing",
-   "dzial": [],
+   "dzial": [
+    "BOK"
+   ],
    "kategoria": "",
    "opis": "",
-   "trigger": "",
-   "systemy": [],
+   "trigger": "Ręcznie: przycisk Wygeneruj fakturę na rozliczeniu (2 razy w miesiącu)",
+   "systemy": [
+    "Dataverse",
+    "Power Automate",
+    "Fabric",
+    "SharePoint",
+    "Excel/Office Scripts",
+    "Teams",
+    "CCRM/KSeF"
+   ],
    "developer": [
     "Adrian Mazurkiewicz"
    ],
@@ -1985,7 +1995,7 @@
     "BOK + Trading"
    ],
    "dokumentacja": "",
-   "komentarz": "",
+   "komentarz": "Comiesięczne ręczne obejście timeoutu wykonuje developer (odchodzi); następca nieustalony.",
    "e2v": false,
    "raportowanie": false,
    "solution": false,

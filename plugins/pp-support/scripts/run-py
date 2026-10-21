@@ -9,6 +9,8 @@ SCRIPT="$DIR/$1.py"
 # Claude Code wymienia z hookami JSON w UTF-8, a Python na Windows domyslnie uzywa cp1252
 # i wywraca sie na polskich znakach (tu: odmowa, a akceptacja sie nie rejestruje).
 export PYTHONIOENCODING=utf-8
+# Git Bash zamienia wartosci zaczynajace sie od "/" na sciezki Windows ("/sites/X" -> "C:/.../Git/sites/X").
+export MSYS2_ENV_CONV_EXCL=CLAUDE_PLUGIN_OPTION_
 IFS= read -r -d '' INPUT || true
 
 refuse() {

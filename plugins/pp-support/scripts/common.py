@@ -132,7 +132,33 @@ def config_from_env() -> dict:
         else:
             cfg[key] = env.strip()
     cfg["dataverse_urls"] = [u.rstrip("/") for u in cfg["dataverse_urls"]]
+    cfg["sharepoint_site"] = site_path(cfg["sharepoint_site"])
     return cfg
+
+
+def site_path(value: str) -> str:
+    """Odwraca konwersje Git Bash: "/sites/X" przychodzi jako "C:/.../Git/sites/X"."""
+    v = (value or "").strip().replace("\\", "/")
+    m = re.search(r"/(sites|teams)/", v)
+    if m and not v.startswith("/"):
+        v = v[m.start():]
+    return v.rstrip("/")
+
+
+def config_problems(cfg: dict) -> list[str]:
+    """Bledy ustawien, ktore inaczej wygladalyby jak brak uprawnien."""
+    problems = []
+    site = cfg.get("sharepoint_site") or ""
+    if site and (not site.startswith("/") or ":" in site):
+        problems.append(f"sharepoint_site ma byc sciezka witryny zaczynajaca sie od '/', np. /sites/Nazwa (jest: {site})")
+    for u in cfg.get("dataverse_urls") or []:
+        p = urlparse(u)
+        if p.scheme != "https" or not DATAVERSE_HOST_RE.match((p.hostname or "").lower()):
+            problems.append(f"dataverse_urls: niepoprawny adres Dataverse {u} (oczekiwany https://<nazwa>.crm<N>.dynamics.com)")
+    host = (cfg.get("sharepoint_host") or "").lower()
+    if host and not SHAREPOINT_HOST_RE.match(host):
+        problems.append(f"sharepoint_host: niepoprawny host {host} (oczekiwany <nazwa>.sharepoint.com)")
+    return problems
 
 
 def load_config() -> dict:
@@ -143,6 +169,7 @@ def load_config() -> dict:
             cfg.update(json.loads(path.read_text(encoding="utf-8")))
         except Exception:
             pass
+    cfg["sharepoint_site"] = site_path(cfg.get("sharepoint_site") or "")
     return cfg
 
 

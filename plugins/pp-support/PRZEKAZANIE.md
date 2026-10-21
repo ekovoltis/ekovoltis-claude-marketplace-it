@@ -43,21 +43,24 @@ Strażnik blokuje zapis do katalogu pluginu w sesji, w której plugin jest zała
 - `python3 tests/test_harness.py`: przechodzi na Linuksie i Windows (strażnik, walidacja planu, akceptacja, zmiana planu po akceptacji, wykonanie z podmienionym HTTP, odwołanie, brak Pythona, `ppcall get --out`, polecenia z PowerShell, awaria hooka).
 - Od 0.1.1: `ppcall get --out` zapisuje tylko w `zgloszenia/<ID>/` (bez `plan.md` i `wykonanie.jsonl`), sprawdzane w hooku i w ppcall. Każdy niezerowy kod hooka to odmowa; UserPromptSubmit przy awarii blokuje tylko wiadomości z akceptacją albo odwołaniem (decyzja Michała z 2026-10-15). Ścieżka do ppcall w innej formie niż bezpośrednie wywołanie (`bash -c`, zmienna, `python ppcall.py`) jest odrzucana.
 
+Test dostępów na produkcji 21.10.2026 (Windows, Git Bash, konto e2vitservice, tokeny Azure CLI):
+
+- Azure CLI wydaje tokeny przyjmowane przez ARM, BAP, Power Automate, Dataverse i Fabric. Tabela `flowruns` w środowisku ekovoltis jest dostępna.
+- `claude plugin install --config klucz=wartość` zapisuje ustawienie z `multiple: true` jako zwykły tekst; `common._as_list` go obsługuje.
+- Launchery `run-py` i `ppcall` działają w Git Bash. Git Bash zamieniał wartości ustawień zaczynające się od `/` na ścieżki Windows (`/sites/X` na `C:/.../Git/sites/X`); od 0.1.2 launchery wyłączają tę konwersję, a `common.site_path` naprawia wartość, która już przyszła zniekształcona.
+
 ## Do zweryfikowania na prawdziwym środowisku
 
-- Czy Azure CLI wyda przyjmowane tokeny dla: BAP (`https://service.powerapps.com/`), Power Automate (`https://service.flow.microsoft.com/`), SharePoint (Graph i REST), Fabric. Najbardziej prawdopodobne problemy: SharePoint i BAP. Jeśli tak, następny krok to własna rejestracja aplikacji w Entra ID z uprawnieniami delegowanymi i zgodą administratora.
-- Czy tabela `flowruns` jest dostępna w środowiskach Dataverse.
-- W jakim formacie Claude Code przekazuje do hooków wartości `userConfig` z `multiple: true` (`common._as_list` obsługuje JSON i listy rozdzielane przecinkami).
+- SharePoint (Graph i REST): test z 21.10.2026 nie doszedł do zapytania przez opisany wyżej błąd ścieżki. Jeśli Azure CLI nie dostanie przyjmowanego tokenu, następny krok to własna rejestracja aplikacji w Entra ID (zgłoszona do administratora).
 - Nazwa narzędzia i pole polecenia dla PowerShell na Windows (strażnik zakłada `PowerShell` i `command`).
-- Działanie launcherów `run-py` i `ppcall` w Git Bash na Windows (ścieżki `/c/...`, `py -3`).
 - Składnia fragmentu managed settings z README (`permissions.deny`, `disableBypassPermissionsMode`).
 
 ## Kolejne zadania
 
-1. Umieścić plugin w repozytorium marketplace (`plugins/pp-support/`), dodać wpis w `.claude-plugin/marketplace.json`.
-2. Dodać GitHub Actions: `claude plugin validate --strict` oraz `python3 tests/test_harness.py`.
-3. Uruchomić test dostępów (`/pp-support:sprawdz-dostepy`) na stanowisku z `az login` i `pac auth create`, przeanalizować raport `dostepy-*.json`, przygotować listę spraw dla administratorów.
-4. Poprawić to, co wyjdzie z punktu 3 i z listy „do zweryfikowania”, z dopisaniem testów.
+1. Zrobione (0.1.0): plugin w repozytorium `ekovoltis/ekovoltis-claude-marketplace-it`, marketplace `ekovoltis-it`.
+2. Zrobione (0.1.0): GitHub Actions z `claude plugin validate --strict` i testami na Linuksie i Windows.
+3. Zrobione 21.10.2026: test dostępów na produkcji, wyniki wyżej. Do powtórzenia dla SharePoint po wdrożeniu 0.1.2.
+4. W toku: poprawki z punktu 3 i z listy „do zweryfikowania”, z testami (0.1.2: ścieżki z Git Bash, walidacja ustawień).
 5. Pilot na 3 do 4 aktywnych automatach o różnym charakterze (np. 007 AKDW, 003 MailBOK, 002 ImportUmow), wyłącznie diagnoza bez wykonywania zmian.
 
 ## Teksty dla ludzi
