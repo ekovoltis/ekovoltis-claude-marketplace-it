@@ -3,6 +3,8 @@
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Komunikaty ppcall maja polskie znaki; przy cp1252 (Windows) print konczy sie wyjatkiem.
 export PYTHONIOENCODING=utf-8
+# Git Bash zamienia wartosci zaczynajace sie od "/" na sciezki Windows ("/sites/X" -> "C:/.../Git/sites/X").
+export MSYS2_ENV_CONV_EXCL=CLAUDE_PLUGIN_OPTION_
 for c in python3 python "py -3"; do
   if $c -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)" >/dev/null 2>&1; then
     exec $c "$DIR/ppcall.py" "$@"

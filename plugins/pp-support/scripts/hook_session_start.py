@@ -23,6 +23,7 @@ def main() -> None:
             lines.append("Brakujace narzedzia: " + ", ".join(missing) + ". Uruchom /pp-support:sprawdz-dostepy.")
         if not cfg["dataverse_urls"]:
             lines.append("Nie skonfigurowano adresow Dataverse (ustawienia pluginu).")
+        lines.extend("Blad ustawien pluginu: " + p for p in C.config_problems(cfg))
         print("\n".join(lines))
     except Exception as e:  # noqa: BLE001
         print(f"[pp-support] Blad inicjalizacji: {e}")
