@@ -111,6 +111,10 @@ DEFAULT_CONFIG = {
     "incidents_dir": "",
     # Puste: krok flow-patch wylaczony we wszystkich srodowiskach.
     "flow_patch_dataverse_urls": [],
+    # Odczyt z API Salesbooka: adres API i zrodlo danych logowania "<adres Dataverse>|<workflowid>|<akcja HTTP>".
+    # Puste: odczyt z Salesbooka wylaczony.
+    "salesbook_api_url": "",
+    "salesbook_auth_flow": "",
 }
 
 
@@ -147,6 +151,7 @@ def config_from_env() -> dict:
             cfg[key] = env.strip()
     cfg["dataverse_urls"] = [u.rstrip("/") for u in cfg["dataverse_urls"]]
     cfg["flow_patch_dataverse_urls"] = [u.rstrip("/") for u in cfg["flow_patch_dataverse_urls"]]
+    cfg["salesbook_api_url"] = cfg["salesbook_api_url"].rstrip("/")
     cfg["sharepoint_site"] = site_path(cfg["sharepoint_site"])
     return cfg
 
@@ -171,6 +176,12 @@ def config_problems(cfg: dict) -> list[str]:
             p = urlparse(u)
             if p.scheme != "https" or not DATAVERSE_HOST_RE.match((p.hostname or "").lower()):
                 problems.append(f"{key}: niepoprawny adres Dataverse {u} (oczekiwany https://<nazwa>.crm<N>.dynamics.com)")
+    sb = cfg.get("salesbook_api_url") or ""
+    if sb and not is_salesbook_url(sb + "/"):
+        problems.append(f"salesbook_api_url: oczekiwany adres https://<nazwa>.salesbook-ent.com/... (jest: {sb})")
+    src = cfg.get("salesbook_auth_flow") or ""
+    if src and salesbook_auth_source(src) is None:
+        problems.append("salesbook_auth_flow: oczekiwany format <adres Dataverse>|<workflowid>|<nazwa akcji HTTP>")
     inc = (cfg.get("incidents_dir") or "").strip()
     if inc and not Path(inc).expanduser().is_absolute():
         problems.append(f"incidents_dir ma byc sciezka bezwzgledna (jest: {inc})")
@@ -219,7 +230,7 @@ CLOUD_HOST_PATTERNS = [
     r"powerplatform\.com", r"powerapps\.com", r"management\.azure\.com",
     r"vault\.azure\.net", r"login\.microsoftonline\.com", r"logic\.azure\.com",
     r"powerautomate\.com", r"database\.windows\.net", r"datawarehouse\.fabric",
-    r"powerplatformusercontent\.com",
+    r"powerplatformusercontent\.com", r"salesbook-ent\.com",
 ]
 CLOUD_HOST_RE = re.compile("|".join(CLOUD_HOST_PATTERNS), re.I)
 
@@ -238,6 +249,74 @@ def is_run_content_url(url: str) -> bool:
     return (p.scheme == "https" and port in (None, 443) and "@" not in p.netloc
             and bool(RUN_CONTENT_HOST_RE.fullmatch((p.hostname or "").lower()))
             and "sig" in parse_qs(p.query or ""))
+
+
+SALESBOOK_HOST_RE = re.compile(r"[a-z0-9-]+\.salesbook-ent\.com")
+
+
+def is_salesbook_url(url: str) -> bool:
+    try:
+        p = urlparse(url)
+        port = p.port
+    except ValueError:
+        return False
+    return (p.scheme == "https" and port in (None, 443) and "@" not in p.netloc
+            and bool(SALESBOOK_HOST_RE.fullmatch((p.hostname or "").lower())))
+
+
+def salesbook_auth_source(value: str) -> tuple[str, str, str] | None:
+    """Rozbiera "<adres Dataverse>|<workflowid>|<akcja>"; None, gdy format jest bledny."""
+    parts = [x.strip() for x in (value or "").split("|")]
+    if len(parts) != 3 or not all(parts):
+        return None
+    dv, wf, action = parts
+    host = (urlparse(dv).hostname or "").lower()
+    if not dv.startswith("https://") or not DATAVERSE_HOST_RE.match(host) or not GUID_RE.fullmatch(wf):
+        return None
+    return dv.rstrip("/"), wf, action
+
+
+SECRET_KEY_RE = re.compile(
+    r"(.*pass(word)?.*|pwd|.*secret.*|.*token|authorization|cookie|set-cookie|x-api-key|api[-_]?key|"
+    r"ocp-apim-subscription-key|connection[-_]?string|pfx|sastoken|credentials?)", re.I)
+SECRET_VALUE_RES = [
+    # Token ma cyfre albo znak base64/JWT, wiec "Basic information" w zwyklym tekscie zostaje.
+    (re.compile(r"\b(Basic|Bearer)\s+(?=[A-Za-z0-9+/=._~-]*[0-9+/=.])[A-Za-z0-9+/=._~-]{12,}"), r"\1 ***"),
+    (re.compile(r"([?&](?:sig|code|token|access_token|key|api-key|apikey|password|pwd)=)[^&\s\"'#]+", re.I), r"\1***"),
+    (re.compile(r'((?:\\?")(?:password|pwd|secret|clientSecret|client_secret|token|authorization)(?:\\?")\s*:\s*\\?")'
+                r'(?:[^"\\]|\\.)*?(\\?")', re.I), r"\1***\2"),
+]
+
+
+def redact_text(text: str) -> str:
+    """Hasla w dowolnym tekscie: naglowki Basic/Bearer, parametry adresu, pola "password" w JSON-ie.
+    Adres tresci przebiegu (SAS) zostaje, bo ppcall potrzebuje go do odczytu."""
+    if is_run_content_url(text):
+        return text
+    for regex, repl in SECRET_VALUE_RES:
+        text = regex.sub(repl, text)
+    return text
+
+
+def redact_secrets(obj):
+    """Zastepuje hasla '***' po nazwie klucza (kazdy typ wartosci) i po wzorcu w tekstach, takze w JSON-ie
+    zapisanym jako tekst (clientdata). Niezmieniona czesc zostaje dokladnie taka jak byla."""
+    if isinstance(obj, dict):
+        return {k: ("***" if SECRET_KEY_RE.fullmatch(str(k)) and obj[k] not in (None, "", [], {})
+                    else redact_secrets(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_secrets(v) for v in obj]
+    if isinstance(obj, str):
+        if obj.strip()[:1] in ("{", "["):
+            try:
+                inner = json.loads(obj)
+            except ValueError:
+                inner = None
+            if isinstance(inner, (dict, list)):
+                red = redact_secrets(inner)
+                return obj if red == inner else json.dumps(red, ensure_ascii=False)
+        return redact_text(obj)
+    return obj
 
 
 def redact_url(url: str) -> str:

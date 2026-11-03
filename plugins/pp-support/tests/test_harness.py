@@ -874,6 +874,206 @@ expect("verify: zakomentowany blok nie jest wykonywany",
 expect("verify: --out do weryfikacja.jsonl zablokowany",
        decision(f'{Q} get "{DV}/api/data/v9.2/WhoAmI" --out zgloszenia/VER-1/weryfikacja.jsonl'), "deny")
 
+print("19. Salesbook: API (dane logowania z flow) i odczyt plikow")
+P = importlib.reload(P)
+SB_API = "https://ekov-api.salesbook-ent.com/api/v1"
+SB_ACTION = "HTTP_-_Get_All_Filles_Connected_With_ID"
+SB_DEF = {"properties": {"definition": {"actions": {"Condition_for_agreements": {"type": "If", "actions": {}, "else": {
+    "actions": {SB_ACTION: {"type": "Http", "inputs": {"method": "GET", "uri": f"{SB_API}/documents/@{{x}}/files",
+                                                       "authentication": {"type": "Basic", "username": "ekov",
+                                                                          "password": "tajne-haslo"}}}}}}}}}}
+cfg = C.load_config()
+expect("Salesbook wylaczony bez ustawien", C.salesbook_auth_source(cfg.get("salesbook_auth_flow") or ""), None)
+cfg.update({"salesbook_api_url": SB_API, "salesbook_auth_flow": f"{DV}|{WF2}|{SB_ACTION}"})
+C.save_config(cfg)
+sb_cfg = {**C.DEFAULT_CONFIG, "salesbook_api_url": SB_API, "salesbook_auth_flow": f"{DV}|{WF2}|{SB_ACTION}"}
+expect("config_problems: poprawne ustawienia Salesbooka", C.config_problems(sb_cfg), [])
+expect("config_problems: zly format zrodla",
+       len(C.config_problems({**sb_cfg, "salesbook_auth_flow": "https://evil.example.com|x|y"})), 1)
+expect("config_problems: obcy host API",
+       len(C.config_problems({**sb_cfg, "salesbook_api_url": "https://evil.example.com/api"})), 1)
+
+sent_sb, opened = [], []
+
+
+class _SbResp(_Resp):
+    def read(self):
+        return b'{"data": {"files": []}}'
+
+
+class _Opener:
+    def __init__(self, handlers):
+        self.handlers = handlers
+
+    def open(self, req, timeout=90):
+        sent_sb.append({"url": req.full_url, "headers": dict(req.header_items()), "method": req.get_method(),
+                        "no_redirect": any(h is P._NoRedirect for h in self.handlers)})
+        return _SbResp()
+
+
+def _dv_urlopen(req, timeout=90):
+    opened.append(req.full_url)
+
+    class R(_Resp):
+        def read(self):
+            return json.dumps({"clientdata": json.dumps(SB_DEF)}).encode("utf-8")
+    return R()
+
+
+real_open, real_build = _ur.urlopen, _ur.build_opener
+_ur.urlopen, _ur.build_opener = _dv_urlopen, lambda *h: _Opener(h)
+P.get_token = lambda resource: "t"
+try:
+    P.http("GET", f"{SB_API}/documents/abc/files")
+    auth = sent_sb[-1]["headers"].get("Authorization", "")
+    expect("Salesbook API: Basic z akcji flow", auth == "Basic " + __import__("base64").b64encode(b"ekov:tajne-haslo").decode(), True)
+    expect("Salesbook API: bez przekierowan", sent_sb[-1]["no_redirect"], True)
+    expect("Salesbook: dane logowania odczytane z Dataverse", [u for u in opened if f"workflows({WF2})" in u] != [], True)
+    P.http("GET", "https://ekov.salesbook-ent.com/signed_document/document/download/file/1?t=2")
+    expect("Salesbook plik: bez danych logowania", "Authorization" in sent_sb[-1]["headers"], False)
+    P.http("GET", "https://ekov-api.salesbook-ent.com/api/v10/x")
+    expect("Salesbook: inna sciezka niz API bez danych logowania", "Authorization" in sent_sb[-1]["headers"], False)
+    for label, call in [("Salesbook: POST odrzucony", lambda: P.http("POST", f"{SB_API}/documents", {})),
+                        ("Salesbook: dane logowania w adresie", lambda: P.http("GET", "https://u:p@ekov-api.salesbook-ent.com/api/v1/x"))]:
+        try:
+            call()
+            expect(label, "brak bledu", "RuntimeError")
+        except RuntimeError:
+            expect(label, "RuntimeError", "RuntimeError")
+    cfg["salesbook_api_url"] = ""
+    C.save_config(cfg)
+    try:
+        P.http("GET", f"{SB_API}/documents/abc/files")
+        expect("Salesbook wylaczony: odmowa", "brak bledu", "RuntimeError")
+    except RuntimeError:
+        expect("Salesbook wylaczony: odmowa", "RuntimeError", "RuntimeError")
+finally:
+    _ur.urlopen, _ur.build_opener = real_open, real_build
+cfg.update({"salesbook_api_url": "", "salesbook_auth_flow": ""})
+C.save_config(cfg)
+expect("Salesbook: curl zablokowany", decision(f'curl -u ekov:x "{SB_API}/documents/abc/files"'), "deny")
+expect("Salesbook: ppcall get dozwolony", decision(f'{Q} get "{SB_API}/documents/abc/files"'), "allow")
+expect("Salesbook: krok planu do API odrzucony",
+       bool(C.step_problems({"nr": 1, "opis": "x", "typ": "http", "metoda": "POST", "url": f"{SB_API}/documents"}, 1)), True)
+
+print("20. Hasla w odpowiedziach sa ukrywane")
+red = C.redact_secrets({"clientdata": json.dumps(SB_DEF), "list": [{"clientSecret": "s3"}], "name": "x"})
+expect("redact: haslo w clientdata", "tajne-haslo" in json.dumps(red), False)
+expect("redact: clientSecret w liscie", "s3" in json.dumps(red), False)
+expect("redact: reszta bez zmian", (red["name"], json.loads(red["clientdata"])["properties"]["definition"]["actions"]
+                                    ["Condition_for_agreements"]["else"]["actions"][SB_ACTION]["inputs"]["authentication"]["username"]),
+       ("x", "ekov"))
+P.http = lambda m, u, b=None, timeout=90, headers=None: (200, json.dumps({"clientdata": json.dumps(SB_DEF)}).encode())
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    P.cmd_get([f"{DV}/api/data/v9.2/workflows({WF2})?$select=clientdata"])
+expect("ppcall get: haslo nie trafia na ekran", "tajne-haslo" in buf.getvalue(), False)
+with contextlib.redirect_stdout(io.StringIO()):
+    P.cmd_get([f"{DV}/api/data/v9.2/workflows({WF2})?$select=clientdata", "--out", "zgloszenia/INC-1/def.json"])
+expect("ppcall get --out: haslo nie trafia do pliku",
+       "tajne-haslo" in (WORK / "zgloszenia/INC-1/def.json").read_text(encoding="utf-8"), False)
+
+print("21. Przegladarka: odczyt swobodnie, zmiany za zgoda")
+
+
+def browser(tool: str, tin: dict) -> str | None:
+    r = hook("hook_guard", {"tool_name": tool, "tool_input": tin, "cwd": str(WORK)})
+    return r["hookSpecificOutput"]["permissionDecision"] if r else None
+
+
+for prefix in ("mcp__claude-in-chrome__", "mcp__Claude_Browser__"):
+    expect(f"{prefix}navigate", browser(prefix + "navigate", {"url": "https://sb.ekovoltis.pl/"}), None)
+    expect(f"{prefix}get_page_text", browser(prefix + "get_page_text", {}), None)
+    expect(f"{prefix}zrzut ekranu", browser(prefix + "computer", {"action": "screenshot"}), None)
+    expect(f"{prefix}klikniecie", browser(prefix + "computer", {"action": "left_click", "action_summary": "Otwiera dokument"}), "ask")
+    expect(f"{prefix}wpisanie tekstu", browser(prefix + "computer", {"action": "type", "text": "x"}), "ask")
+    expect(f"{prefix}formularz", browser(prefix + "form_input", {"ref": "ref_1", "value": "x"}), "ask")
+    expect(f"{prefix}javascript", browser(prefix + "javascript_tool", {"text": "1"}), "ask")
+    expect(f"{prefix}wgrywanie pliku", browser(prefix + "file_upload", {}), "deny")
+expect("browser_batch z kliknieciem", browser("mcp__claude-in-chrome__browser_batch", {"actions": [
+    {"name": "navigate", "input": {"url": "https://sb.ekovoltis.pl"}},
+    {"name": "computer", "input": {"action": "left_click"}}]}), "ask")
+expect("browser_batch z wgraniem pliku", browser("mcp__claude-in-chrome__browser_batch", {"actions": [
+    {"name": "computer", "input": {"action": "left_click"}}, {"name": "file_upload", "input": {}}]}), "deny")
+expect("browser_batch tylko odczyt", browser("mcp__Claude_Browser__browser_batch", {"actions": [
+    {"name": "get_page_text", "input": {}}]}), None)
+
+for label, tool, tin, want in [
+    ("klikniecie srodkowym", "computer", {"action": "middle_click"}, "ask"),
+    ("wcisniecie przycisku myszy", "computer", {"action": "left_mouse_down"}, "ask"),
+    ("akcja bez nazwy", "computer", {}, "ask"),
+    ("najechanie kursorem", "computer", {"action": "hover"}, None),
+    ("upload_image", "upload_image", {}, "deny"),
+    ("shortcuts_execute", "shortcuts_execute", {}, "ask"),
+    ("nieznane narzedzie", "nowe_narzedzie", {}, "ask"),
+    ("navigate javascript:", "navigate", {"url": "javascript:alert(1)"}, "deny"),
+    ("navigate data:", "navigate", {"url": "data:text/html,x"}, "deny"),
+    ("navigate wstecz", "navigate", {"url": "back"}, None),
+    ("navigate bez protokolu", "navigate", {"url": "sb.ekovoltis.pl/dashboard"}, None),
+    ("batch: actions nie jest lista", "browser_batch", {"actions": "x"}, "ask"),
+    ("batch: element bez nazwy", "browser_batch", {"actions": [{"input": {}}]}, "ask"),
+    ("batch: input nie jest obiektem", "browser_batch", {"actions": [{"name": "computer", "input": "x"}]}, "ask"),
+    ("batch: nazwa z prefiksem", "browser_batch",
+     {"actions": [{"name": "mcp__claude-in-chrome__file_upload", "input": {}}]}, "deny"),
+]:
+    expect(f"przegladarka: {label}", browser("mcp__claude-in-chrome__" + tool, tin), want)
+
+print("22. Ukrywanie hasel: naglowki, adresy, tekst")
+for label, value, secret in [
+    ("naglowek Authorization", {"headers": {"Authorization": "Basic ZWtvdjp0YWpuZS1oYXNsbw=="}}, "ZWtvdjp0YWpuZS1oYXNsbw=="),
+    ("Basic w tekscie", {"msg": "uzyto Basic ZWtvdjp0YWpuZS1oYXNsbw== do"}, "ZWtvdjp0YWpuZS1oYXNsbw=="),
+    ("code= w adresie", {"uri": "https://x.azurewebsites.net/api/f?code=KLUCZ123&a=1"}, "KLUCZ123"),
+    ("haslo liczbowe", {"password": 123456}, "123456"),
+    ("JSON w tekscie ze spacja", {"s": ' {"pwd": "q-tajne"}'}, "q-tajne"),
+    ("token w kluczu", {"access_token": "eyJ0eXAi"}, "eyJ0eXAi"),
+]:
+    expect(f"redact: {label}", secret in json.dumps(C.redact_secrets(value), ensure_ascii=False), False)
+expect("redact: zwykly tekst bez zmian", C.redact_secrets({"opis": "Basic information", "code": "NotSpecified"}),
+       {"opis": "Basic information", "code": "NotSpecified"})
+expect("redact: adres tresci przebiegu zostaje", C.redact_secrets({"uri": SAS})["uri"], SAS)
+expect("redact: odpowiedz tekstowa", P.redact_payload(b"Authorization: Bearer abc.def.ghi123456"),
+       b"Authorization: Bearer ***")
+expect("redact: plik binarny bez zmian", P.redact_payload(b"%PDF-\xff\xfe"), b"%PDF-\xff\xfe")
+unchanged = json.dumps({"a": 1, "b": "x"}, indent=4).encode()
+expect("redact: odpowiedz bez hasel bez zmian bajt w bajt", P.redact_payload(unchanged), unchanged)
+expect("Read kopii definicji zablokowany",
+       hook("hook_guard", {"tool_name": "Read", "tool_input": {"file_path": str(WORK / "zgloszenia/FP-1/backup/x.json")},
+                           "cwd": str(WORK)})["hookSpecificOutput"]["permissionDecision"], "deny")
+expect("Read notatek dozwolony",
+       hook("hook_guard", {"tool_name": "Read", "tool_input": {"file_path": str(WORK / "zgloszenia/FP-1/notatki.md")},
+                           "cwd": str(WORK)}), None)
+
+print("23. Tokeny i dane logowania nie ida dalej")
+P = importlib.reload(P)
+cfg.update({"salesbook_api_url": SB_API, "salesbook_auth_flow": f"{DV}|{WF2}|{SB_ACTION}"})
+C.save_config(cfg)
+try:
+    P.http("GET", f"{SB_API}/../../admin/x")
+    expect("Salesbook: sciezka z .. odrzucona", "brak bledu", "RuntimeError")
+except RuntimeError:
+    expect("Salesbook: sciezka z .. odrzucona", "RuntimeError", "RuntimeError")
+cfg.update({"salesbook_api_url": "", "salesbook_auth_flow": ""})
+C.save_config(cfg)
+captured = {}
+
+
+def _cap_urlopen(req, timeout=90):
+    captured["redirected"] = dict(req.headers)
+    captured["unredirected"] = dict(req.unredirected_hdrs)
+    return _Resp()
+
+
+P.get_token = lambda resource: "tok"
+real_open = _ur.urlopen
+_ur.urlopen = _cap_urlopen
+try:
+    P.http("GET", f"{DV}/api/data/v9.2/WhoAmI")
+finally:
+    _ur.urlopen = real_open
+expect("token Microsoft nie idzie za przekierowaniem",
+       ("Authorization" in captured.get("unredirected", {}), "Authorization" in captured.get("redirected", {})),
+       (True, False))
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

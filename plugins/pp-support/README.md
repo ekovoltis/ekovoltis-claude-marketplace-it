@@ -1,4 +1,4 @@
-# pp-support 0.3.0
+# pp-support 1.0.0
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -55,6 +55,13 @@ pp-support/
 | w planie: DELETE, argumenty delete/remove/purge/secret, zmiana definicji flow poza krokiem `flow-patch`, hosty spoza listy | usuwanie i przebudowę logiki robi człowiek, logika przez ścieżkę deweloperską (SWO) |
 
 Dozwolone hosty dla tokenów: Graph, ARM, Power Automate, BAP, Power Platform API, Fabric, środowiska Dataverse (`*.crm*.dynamics.com`), SharePoint (`*.sharepoint.com`). Na inne adresy `ppcall` nie wyśle tokenu. Wyjątek bez tokenu: treść wejść i wyjść akcji z historii przebiegu (`inputsLink`/`outputsLink` na `*.environment.api.powerplatformusercontent.com`), którą `ppcall get` pobiera tylko metodą GET, bo podpis SAS jest w adresie. Do dziennika audytu adres trafia bez podpisu.
+
+## Salesbook
+
+- **API:** `ppcall get` czyta z API Salesbooka (tylko GET), gdy ustawione są `salesbook_api_url` i `salesbook_auth_flow`. Dane logowania Basic `ppcall` pobiera w swoim procesie z akcji HTTP flow integracji (`<adres Dataverse>|<workflowid>|<nazwa akcji>`), nie wypisuje ich i wysyła tylko pod adres API, bez przekierowań. Pliki dokumentów z `*.salesbook-ent.com` pobiera bez danych logowania. `curl` do Salesbooka blokuje strażnik.
+- **Aplikacja:** Claude czyta ją w przeglądarce pracownika, który loguje się sam.
+- **Przeglądarka (Claude in Chrome i przeglądarka w aplikacji):** narzędzia i akcje odczytu (tekst strony, zrzut ekranu, przewijanie, karty) bez pytań; każde inne działanie, także nowe narzędzie, za zgodą człowieka; wgrywanie plików zablokowane; adresy tylko http(s). Dotyczy każdej strony i każdej sesji, bo plugin jest włączony na stałe, więc przy testowaniu aplikacji w przeglądarce każde kliknięcie wymaga zgody.
+- **Hasła w odpowiedziach** (dane logowania w definicji flow, nagłówki `Authorization`, klucze w adresach, pola z hasłem i tokenem) `ppcall get` i `ppcall runs` zastępują `***`, na ekranie i w plikach. Kopie definicji w `backup/` są pełne, dlatego strażnik blokuje ich odczyt.
 
 ## Zmiana wartości w akcji flow (`flow-patch`)
 

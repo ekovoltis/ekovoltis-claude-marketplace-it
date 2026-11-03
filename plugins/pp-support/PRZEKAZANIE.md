@@ -1,4 +1,4 @@
-# pp-support: notatka przekazania (stan na 2026-11-03, 0.3.0)
+# pp-support: notatka przekazania (stan na 2026-11-03, 1.0.0)
 
 Ten plik opisuje, skąd wziął się plugin, jakie decyzje już zapadły i co jest do zrobienia. Powstał w rozmowie w claude.ai, której sesja Claude Code nie widzi.
 
@@ -14,12 +14,12 @@ Claude nie wykonuje żadnej zmiany w środowisku, dopóki pracownik nie zrozumie
 
 ## Niezmienniki harnessu (nie osłabiać bez decyzji Michała Kaszty)
 
-1. Ruch do chmury Microsoft wyłącznie przez `scripts/ppcall`. Tokeny pobiera ppcall w swoim procesie, nie wypisuje ich i wysyła tylko na hosty z listy w `common.py`.
+1. Ruch do chmury Microsoft i do Salesbooka wyłącznie przez `scripts/ppcall`. Tokeny i dane logowania pobiera ppcall w swoim procesie, nie wypisuje ich i wysyła tylko na hosty z listy w `common.py` (dane logowania Salesbooka tylko pod `salesbook_api_url`, bez przekierowań).
 2. Akceptację tworzy wyłącznie hook `UserPromptSubmit` z wiadomości człowieka. Format: `AKCEPTUJĘ <ID> <skrót>` oraz pola `Przyczyna:` i `Naprawa:` napisane własnymi słowami (min. 30 znaków, odrzucane kopie z planu).
 3. Akceptacja jest związana ze skrótem `plan.md`. Zmiana planu unieważnia akceptację. Ważność ograniczona czasowo.
 4. Kroki wykonywane po kolei, każdy osobnym `ppcall exec`, z dodatkowym pytaniem Claude Code (`ask`). Nieudany krok zatrzymuje plan.
 5. Warunki wykonania sprawdzane są dwa razy: w hooku i w ppcall (`common.can_execute`). Zmiana logiki tylko w jednym miejscu jest błędem. Warunki wymagające odczytu ze środowiska (stan definicji przy `flow-patch`) sprawdza tylko ppcall, bo hook nie wychodzi do sieci.
-6. Nigdy, nawet z akceptacją: usuwanie, sekrety, ponowne uwierzytelnianie połączeń, zmiana definicji flow poza krokiem `flow-patch`. `flow-patch` (decyzja Michała Kaszty z 2026-11-03, ITS-417) zmienia tylko istniejące wartości tekstowe pod `inputs/parameters` albo `inputs/body` istniejących akcji, najwyżej 5 na krok, w jednym flow niezarządzanym, wyłącznie w środowiskach z `flow_patch_dataverse_urls`, z kopią, `If-Match` i porównaniem po zapisie. Przebudowa logiki (akcje, warunki, kolejność, wyzwalacze, połączenia) nadal idzie ścieżką deweloperską (SWO).
+6. Nigdy, nawet z akceptacją: usuwanie, sekrety, ponowne uwierzytelnianie połączeń, zmiana definicji flow poza krokiem `flow-patch`. Wyjątek dla sekretów (decyzja Michała z 2026-11-03): ppcall odczytuje dane logowania API Salesbooka z akcji HTTP flow integracji (`salesbook_auth_flow`) wyłącznie po to, żeby czytać z API Salesbooka, i nigdy ich nie wypisuje; wartości haseł w odpowiedziach `get` i `runs` są zastępowane `***`. Po przeniesieniu danych logowania do Key Vault źródło trzeba zmienić. `flow-patch` (decyzja Michała Kaszty z 2026-11-03, ITS-417) zmienia tylko istniejące wartości tekstowe pod `inputs/parameters` albo `inputs/body` istniejących akcji, najwyżej 5 na krok, w jednym flow niezarządzanym, wyłącznie w środowiskach z `flow_patch_dataverse_urls`, z kopią, `If-Match` i porównaniem po zapisie. Przebudowa logiki (akcje, warunki, kolejność, wyzwalacze, połączenia) nadal idzie ścieżką deweloperską (SWO).
 7. Błąd wewnętrzny hooka kończy się odmową (fail closed). Brak Pythona blokuje operacje.
 8. Hooki to zabezpieczenie przed pomyłką, nie granica bezpieczeństwa. Granicą jest tożsamość: role tylko do odczytu na co dzień, uprawnienia do zmian przez PIM na czas zgłoszenia.
 

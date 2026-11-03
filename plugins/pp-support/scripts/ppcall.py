@@ -15,6 +15,7 @@ Tokeny sa pobierane wewnatrz procesu i nigdy nie sa wypisywane.
 """
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import os
@@ -87,14 +88,91 @@ def encode_url(url: str) -> str:
     return urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Dane logowania Salesbooka nie moga pojsc za przekierowaniem na inny adres."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _find_action(actions: dict, name: str):
+    for key, action in (actions or {}).items():
+        if key == name:
+            return action
+        if not isinstance(action, dict):
+            continue
+        nested = [action.get("actions"), (action.get("else") or {}).get("actions"),
+                  (action.get("default") or {}).get("actions")]
+        nested += [(c or {}).get("actions") for c in (action.get("cases") or {}).values()]
+        for block in nested:
+            found = _find_action(block or {}, name)
+            if found is not None:
+                return found
+    return None
+
+
+_SALESBOOK_AUTH: dict = {}
+
+
+def salesbook_auth() -> str:
+    """Naglowek Basic dla API Salesbooka z akcji HTTP flow integracji (decyzja z 2026-11-03).
+    Pobierany w tym procesie i nigdzie nie wypisywany."""
+    if "value" in _SALESBOOK_AUTH:
+        return _SALESBOOK_AUTH["value"]
+    src = C.salesbook_auth_source(C.load_config().get("salesbook_auth_flow") or "")
+    if not src:
+        raise RuntimeError("Odczyt z Salesbooka jest wylaczony: brak ustawienia salesbook_auth_flow.")
+    dv, wf, action_name = src
+    status, payload = http("GET", f"{dv}/api/data/v9.2/workflows({wf})?$select=clientdata")
+    if status != 200:
+        raise RuntimeError(f"Nie mozna odczytac flow z danymi logowania Salesbooka: HTTP {status}")
+    definition = json.loads(json.loads(payload)["clientdata"])
+    action = _find_action(definition["properties"]["definition"]["actions"], action_name)
+    auth = ((action or {}).get("inputs") or {}).get("authentication") or {}
+    if str(auth.get("type", "")).lower() != "basic" or not auth.get("username") or not auth.get("password"):
+        raise RuntimeError(f"Akcja {action_name} nie ma danych logowania Basic.")
+    token = base64.b64encode(f"{auth['username']}:{auth['password']}".encode("utf-8")).decode("ascii")
+    _SALESBOOK_AUTH["value"] = f"Basic {token}"
+    return _SALESBOOK_AUTH["value"]
+
+
+def _salesbook_get(url: str, timeout: int) -> tuple[int, bytes]:
+    """GET do Salesbooka: dane logowania tylko pod skonfigurowany adres API, bez przekierowan."""
+    api = (C.load_config().get("salesbook_api_url") or "").rstrip("/")
+    if not api:
+        raise RuntimeError("Odczyt z Salesbooka jest wylaczony: brak ustawienia salesbook_api_url.")
+    send = {"Accept": "application/json"}
+    target, base = urllib.parse.urlparse(url), urllib.parse.urlparse(api)
+    segments = urllib.parse.unquote(target.path).split("/")
+    if ".." in segments or "." in segments:
+        raise RuntimeError("Salesbook: sciezka z '..' albo '.' jest odrzucana.")
+    if ((target.hostname or "").lower() == (base.hostname or "").lower()
+            and target.path.startswith(base.path.rstrip("/") + "/")):
+        send["Authorization"] = salesbook_auth()
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(url, method="GET", headers=send), timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
 def http(method: str, url: str, body=None, timeout: int = 90, headers: dict | None = None) -> tuple[int, bytes]:
     url = encode_url(url)
     send = {"Accept": "application/json"}
     try:
         run_content = C.is_run_content_url(url)
+        salesbook = C.is_salesbook_url(url)
         C.resource_for_url(url)
     except ValueError as e:
         raise RuntimeError(f"Niepoprawny adres URL ({e})")
+    if salesbook:
+        if method != "GET" or body is not None:
+            raise RuntimeError("Salesbook: dozwolony tylko odczyt (GET).")
+        try:
+            return _salesbook_get(url, timeout)
+        except (ValueError, InvalidURL) as e:
+            raise RuntimeError(f"Niepoprawny adres URL ({e})")
     if run_content:
         # Podpis SAS jest w adresie: token nie jest potrzebny i nie moze tam trafic.
         if method != "GET":
@@ -103,8 +181,8 @@ def http(method: str, url: str, body=None, timeout: int = 90, headers: dict | No
         resource = C.resource_for_url(url)
         if not resource:
             raise RuntimeError(f"Host spoza listy dozwolonych, token nie zostanie wyslany: {url}")
-        send.update({"Authorization": f"Bearer {get_token(resource)}",
-                     "OData-MaxVersion": "4.0", "OData-Version": "4.0"})
+        bearer = f"Bearer {get_token(resource)}"
+        send.update({"OData-MaxVersion": "4.0", "OData-Version": "4.0"})
         if "sharepoint.com" in url and "/_api/" in url:
             send["Accept"] = "application/json;odata=nometadata"
     data = None
@@ -114,12 +192,30 @@ def http(method: str, url: str, body=None, timeout: int = 90, headers: dict | No
     send.update(headers or {})
     try:
         req = urllib.request.Request(url, data=data, method=method, headers=send)
+        if not run_content:
+            # Naglowek "unredirected": przy przekierowaniu na inny adres token nie idzie dalej.
+            req.add_unredirected_header("Authorization", bearer)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
     except (ValueError, InvalidURL) as e:
         raise RuntimeError(f"Niepoprawny adres URL ({e}): {C.redact_url(url)}")
+
+
+def redact_payload(payload: bytes) -> bytes:
+    """Odpowiedz bez hasel (np. danych logowania w definicji flow). Pliki binarne bez zmian."""
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return payload
+    try:
+        data = json.loads(text)
+    except ValueError:
+        red = C.redact_text(text)
+        return payload if red == text else red.encode("utf-8")
+    redacted = C.redact_secrets(data)
+    return payload if redacted == data else json.dumps(redacted, ensure_ascii=False).encode("utf-8")
 
 
 def _short(payload: bytes, max_kb: int) -> str:
@@ -183,6 +279,7 @@ def cmd_get(args: list[str]) -> None:
     except (RuntimeError, ValueError) as e:
         fail(str(e))
     C.audit({"typ": "odczyt", "url": C.redact_url(url), "status": status, "wszystkie_strony": all_pages})
+    payload = redact_payload(payload)
     out(f"HTTP {status}")
     if out_file:
         Path(out_file).write_bytes(payload)
@@ -213,21 +310,21 @@ def _run_content(link) -> object:
     if status != 200:
         return {"blad": f"HTTP {status}"}
     try:
-        return json.loads(payload)
+        return C.redact_secrets(json.loads(payload))
     except ValueError:
-        return payload.decode("utf-8", errors="replace")
+        return C.redact_text(payload.decode("utf-8", errors="replace"))
 
 
 def _run_record(run: dict, detail: dict | None, inputs: set, outputs: set) -> dict:
     props = (detail or run).get("properties", {})
     rec = {"name": run.get("name"), "startTime": props.get("startTime"), "endTime": props.get("endTime"),
-           "status": props.get("status"), "error": props.get("error")}
+           "status": props.get("status"), "error": C.redact_secrets(props.get("error"))}
     if detail is None:
         return rec
     steps = {"trigger": props.get("trigger") or {}, **(props.get("actions") or {})}
     rec["akcje"] = {}
     for name, a in steps.items():
-        item = {"status": a.get("status"), "code": a.get("code"), "error": a.get("error")}
+        item = {"status": a.get("status"), "code": a.get("code"), "error": C.redact_secrets(a.get("error"))}
         if name in inputs:
             item["wejscia"] = _run_content(a.get("inputsLink"))
         if name in outputs:
@@ -275,7 +372,7 @@ def cmd_runs(args: list[str]) -> None:
             while next_url and count < limit:
                 status, payload = http("GET", next_url)
                 if status != 200:
-                    fail(f"Lista przebiegow: HTTP {status} {_short(payload, 1)[:300]}", 2)
+                    fail(f"Lista przebiegow: HTTP {status} {_short(redact_payload(payload), 1)[:300]}", 2)
                 page = json.loads(payload)
                 for run in page.get("value") or []:
                     if not RUN_NAME_RE.fullmatch(str(run.get("name", ""))):
