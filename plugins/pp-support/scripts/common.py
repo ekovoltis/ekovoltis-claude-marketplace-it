@@ -49,7 +49,8 @@ def valid_id(incident_id: str) -> bool:
     return bool(re.fullmatch(ID_RE, incident_id or ""))
 
 
-RESERVED_INCIDENT_FILES = {"plan.md", "wykonanie.jsonl"}
+VERIFY_LOG = "weryfikacja.jsonl"
+RESERVED_INCIDENT_FILES = {"plan.md", "wykonanie.jsonl", VERIFY_LOG}
 BACKUP_DIR_NAME = "backup"
 
 
@@ -72,7 +73,7 @@ def out_path_problem(cwd: str | Path, path: str) -> str | None:
         return where
     # Windows pomija koncowe kropki i spacje: "plan.md." to ten sam plik co plan.md
     if len(parts) == 2 and parts[1].rstrip(". ").lower() in RESERVED_INCIDENT_FILES:
-        return "--out: plan.md i wykonanie.jsonl nie moga byc nadpisane odpowiedzia HTTP."
+        return "--out: plan.md, wykonanie.jsonl i weryfikacja.jsonl nie moga byc nadpisane odpowiedzia HTTP."
     if parts[1].rstrip(". ").lower() == BACKUP_DIR_NAME:
         return "--out: kopie definicji w backup/ zapisuje wylacznie ppcall exec."
     if any(p.lower() == ".claude" for p in parts):
@@ -110,6 +111,10 @@ DEFAULT_CONFIG = {
     "incidents_dir": "",
     # Puste: krok flow-patch wylaczony we wszystkich srodowiskach.
     "flow_patch_dataverse_urls": [],
+    # Odczyt z API Salesbooka: adres API i zrodlo danych logowania "<adres Dataverse>|<workflowid>|<akcja HTTP>".
+    # Puste: odczyt z Salesbooka wylaczony.
+    "salesbook_api_url": "",
+    "salesbook_auth_flow": "",
 }
 
 
@@ -146,6 +151,7 @@ def config_from_env() -> dict:
             cfg[key] = env.strip()
     cfg["dataverse_urls"] = [u.rstrip("/") for u in cfg["dataverse_urls"]]
     cfg["flow_patch_dataverse_urls"] = [u.rstrip("/") for u in cfg["flow_patch_dataverse_urls"]]
+    cfg["salesbook_api_url"] = cfg["salesbook_api_url"].rstrip("/")
     cfg["sharepoint_site"] = site_path(cfg["sharepoint_site"])
     return cfg
 
@@ -170,6 +176,12 @@ def config_problems(cfg: dict) -> list[str]:
             p = urlparse(u)
             if p.scheme != "https" or not DATAVERSE_HOST_RE.match((p.hostname or "").lower()):
                 problems.append(f"{key}: niepoprawny adres Dataverse {u} (oczekiwany https://<nazwa>.crm<N>.dynamics.com)")
+    sb = cfg.get("salesbook_api_url") or ""
+    if sb and not is_salesbook_url(sb + "/"):
+        problems.append(f"salesbook_api_url: oczekiwany adres https://<nazwa>.salesbook-ent.com/... (jest: {sb})")
+    src = cfg.get("salesbook_auth_flow") or ""
+    if src and salesbook_auth_source(src) is None:
+        problems.append("salesbook_auth_flow: oczekiwany format <adres Dataverse>|<workflowid>|<nazwa akcji HTTP>")
     inc = (cfg.get("incidents_dir") or "").strip()
     if inc and not Path(inc).expanduser().is_absolute():
         problems.append(f"incidents_dir ma byc sciezka bezwzgledna (jest: {inc})")
@@ -218,7 +230,7 @@ CLOUD_HOST_PATTERNS = [
     r"powerplatform\.com", r"powerapps\.com", r"management\.azure\.com",
     r"vault\.azure\.net", r"login\.microsoftonline\.com", r"logic\.azure\.com",
     r"powerautomate\.com", r"database\.windows\.net", r"datawarehouse\.fabric",
-    r"powerplatformusercontent\.com",
+    r"powerplatformusercontent\.com", r"salesbook-ent\.com",
 ]
 CLOUD_HOST_RE = re.compile("|".join(CLOUD_HOST_PATTERNS), re.I)
 
@@ -237,6 +249,74 @@ def is_run_content_url(url: str) -> bool:
     return (p.scheme == "https" and port in (None, 443) and "@" not in p.netloc
             and bool(RUN_CONTENT_HOST_RE.fullmatch((p.hostname or "").lower()))
             and "sig" in parse_qs(p.query or ""))
+
+
+SALESBOOK_HOST_RE = re.compile(r"[a-z0-9-]+\.salesbook-ent\.com")
+
+
+def is_salesbook_url(url: str) -> bool:
+    try:
+        p = urlparse(url)
+        port = p.port
+    except ValueError:
+        return False
+    return (p.scheme == "https" and port in (None, 443) and "@" not in p.netloc
+            and bool(SALESBOOK_HOST_RE.fullmatch((p.hostname or "").lower())))
+
+
+def salesbook_auth_source(value: str) -> tuple[str, str, str] | None:
+    """Rozbiera "<adres Dataverse>|<workflowid>|<akcja>"; None, gdy format jest bledny."""
+    parts = [x.strip() for x in (value or "").split("|")]
+    if len(parts) != 3 or not all(parts):
+        return None
+    dv, wf, action = parts
+    host = (urlparse(dv).hostname or "").lower()
+    if not dv.startswith("https://") or not DATAVERSE_HOST_RE.match(host) or not GUID_RE.fullmatch(wf):
+        return None
+    return dv.rstrip("/"), wf, action
+
+
+SECRET_KEY_RE = re.compile(
+    r"(.*pass(word)?.*|pwd|.*secret.*|.*token|authorization|cookie|set-cookie|x-api-key|api[-_]?key|"
+    r"ocp-apim-subscription-key|connection[-_]?string|pfx|sastoken|credentials?)", re.I)
+SECRET_VALUE_RES = [
+    # Token ma cyfre albo znak base64/JWT, wiec "Basic information" w zwyklym tekscie zostaje.
+    (re.compile(r"\b(Basic|Bearer)\s+(?=[A-Za-z0-9+/=._~-]*[0-9+/=.])[A-Za-z0-9+/=._~-]{12,}"), r"\1 ***"),
+    (re.compile(r"([?&](?:sig|code|token|access_token|key|api-key|apikey|password|pwd)=)[^&\s\"'#]+", re.I), r"\1***"),
+    (re.compile(r'((?:\\?")(?:password|pwd|secret|clientSecret|client_secret|token|authorization)(?:\\?")\s*:\s*\\?")'
+                r'(?:[^"\\]|\\.)*?(\\?")', re.I), r"\1***\2"),
+]
+
+
+def redact_text(text: str) -> str:
+    """Hasla w dowolnym tekscie: naglowki Basic/Bearer, parametry adresu, pola "password" w JSON-ie.
+    Adres tresci przebiegu (SAS) zostaje, bo ppcall potrzebuje go do odczytu."""
+    if is_run_content_url(text):
+        return text
+    for regex, repl in SECRET_VALUE_RES:
+        text = regex.sub(repl, text)
+    return text
+
+
+def redact_secrets(obj):
+    """Zastepuje hasla '***' po nazwie klucza (kazdy typ wartosci) i po wzorcu w tekstach, takze w JSON-ie
+    zapisanym jako tekst (clientdata). Niezmieniona czesc zostaje dokladnie taka jak byla."""
+    if isinstance(obj, dict):
+        return {k: ("***" if SECRET_KEY_RE.fullmatch(str(k)) and obj[k] not in (None, "", [], {})
+                    else redact_secrets(v)) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_secrets(v) for v in obj]
+    if isinstance(obj, str):
+        if obj.strip()[:1] in ("{", "["):
+            try:
+                inner = json.loads(obj)
+            except ValueError:
+                inner = None
+            if isinstance(inner, (dict, list)):
+                red = redact_secrets(inner)
+                return obj if red == inner else json.dumps(red, ensure_ascii=False)
+        return redact_text(obj)
+    return obj
 
 
 def redact_url(url: str) -> str:
@@ -267,6 +347,11 @@ FLOW_PATCH_MAX_CHANGES = 5
 # Zmieniac wolno tylko wartosci pod inputs.parameters albo inputs.body. Klucze ponizej sa zabronione
 # na kazdym poziomie, bo przekierowuja wywolanie albo zmieniaja polaczenie.
 FLOW_PATCH_INPUT_ROOTS = {"parameters", "body"}
+# Wyjatki od INPUT_ROOTS: ksztalt sciezki pod inputs -> wymagany typ akcji (sprawdzany na zywej definicji).
+#   []                          cale inputs akcji Compose (wyrazenie albo tekst)
+#   ["variables", "<n>", "value"]  wartosc poczatkowa w InitializeVariable
+#   ["value"]                   wartosc w SetVariable
+FLOW_PATCH_TYPED_TARGETS = {"Compose", "InitializeVariable", "SetVariable"}
 FLOW_PATCH_FORBIDDEN_KEYS = {"uri", "method", "headers", "host", "authentication", "path", "pathtemplate",
                              "relativepath", "function", "operationid", "apimanagement", "queries"}
 FLOW_PATCH_FORBIDDEN_PREFIXES = ("connection", "serviceprovider")
@@ -383,14 +468,38 @@ def _split_flow_patch_path(path) -> tuple[int, str | None]:
             return -1, f"element '{head}' jest poza zakresem (dozwolona tylko zmiana wartosci w inputs akcji)"
 
 
+def is_index(key: str) -> bool:
+    """Numer pozycji listy w kanonicznej postaci ASCII ("0", "12"; nie "00", nie inne cyfry Unicode)."""
+    return bool(re.fullmatch(r"0|[1-9][0-9]*", key))
+
+
+def flow_patch_required_type(path: list[str]) -> str | None:
+    """Typ akcji wymagany dla sciezki spoza parameters/body; None, gdy typ nie ma znaczenia."""
+    i, problem = _split_flow_patch_path(path)
+    if problem:
+        return None
+    keys = path[i + 1:]
+    if not keys:
+        return "Compose"
+    if len(keys) == 3 and keys[0] == "variables" and is_index(keys[1]) and keys[2] == "value":
+        return "InitializeVariable"
+    if keys == ["value"]:
+        return "SetVariable"
+    return None
+
+
 def flow_patch_path_problem(path) -> str | None:
-    """Sciezka musi prowadzic przez akcje (takze zagniezdzone) do wartosci pod inputs.parameters albo inputs.body."""
+    """Sciezka musi prowadzic przez akcje (takze zagniezdzone) do wartosci pod inputs.parameters albo inputs.body,
+    albo do wartosci akcji Compose lub zmiennej (flow_patch_required_type)."""
     i, problem = _split_flow_patch_path(path)
     if problem:
         return problem
+    if flow_patch_required_type(path):
+        return None
     keys = path[i + 1:]
     if len(keys) < 2 or keys[0] not in FLOW_PATCH_INPUT_ROOTS:
-        return "zmienic mozna tylko wartosc pod inputs/parameters/<klucz> albo inputs/body/<klucz>"
+        return ("zmienic mozna tylko wartosc pod inputs/parameters/<klucz> albo inputs/body/<klucz>, cale inputs "
+                "akcji Compose albo wartosc zmiennej (inputs/variables/<n>/value, inputs/value)")
     bad = [k for k in keys if k.lower() in FLOW_PATCH_FORBIDDEN_KEYS
            or k.lower().startswith(FLOW_PATCH_FORBIDDEN_PREFIXES)]
     if bad:
@@ -401,7 +510,7 @@ def flow_patch_path_problem(path) -> str | None:
 def flow_patch_label(path: list[str]) -> str:
     """Nazwa akcji i klucz w jej inputs, czytelne dla czlowieka. Tylko dla sciezki po walidacji."""
     i, _ = _split_flow_patch_path(path)
-    return f"{path[i - 1]}: {'/'.join(path[i + 1:])}"
+    return f"{path[i - 1]}: {'/'.join(path[i + 1:]) or 'inputs'}"
 
 
 def flow_patch_problems(step: dict, nr: int) -> list[str]:
@@ -442,15 +551,23 @@ def flow_patch_problems(step: dict, nr: int) -> list[str]:
 
 
 def get_at(obj, path: list[str]):
+    """Klucze slownikow albo numery pozycji list (jako tekst), jak w leaf_diff."""
     for key in path:
-        if not isinstance(obj, dict) or key not in obj:
+        if isinstance(obj, dict) and key in obj:
+            obj = obj[key]
+        elif isinstance(obj, list) and is_index(key) and int(key) < len(obj):
+            obj = obj[int(key)]
+        else:
             raise KeyError(key)
-        obj = obj[key]
     return obj
 
 
 def set_at(obj, path: list[str], value) -> None:
-    get_at(obj, path[:-1])[path[-1]] = value
+    parent = get_at(obj, path[:-1])
+    if isinstance(parent, list):
+        parent[int(path[-1])] = value
+    else:
+        parent[path[-1]] = value
 
 
 def leaf_diff(a, b, prefix: tuple = ()) -> list[tuple]:
@@ -496,7 +613,40 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
             errs.append(f"{label}: aktualna wartosc nie jest tekstem")
         elif current != ch["bylo"]:
             errs.append(f"{label}: aktualna wartosc rozni sie od 'bylo'")
+        required = flow_patch_required_type(ch["sciezka"])
+        if required:
+            i, _ = _split_flow_patch_path(ch["sciezka"])
+            actual = get_at(definition, ch["sciezka"][:i]).get("type")
+            if actual != required:
+                errs.append(f"{label}: ta sciezka jest dozwolona tylko w akcji {required}, a akcja ma typ {actual}")
     return errs, definition
+
+
+def parse_checks(text: str) -> tuple[list[dict], list[str]]:
+    """Odczyty weryfikacyjne z bloku ```json w sekcji 'Weryfikacja po naprawie' (opcjonalny)."""
+    section = _strip_comments(split_sections(text).get("Weryfikacja po naprawie", ""))
+    m = re.search(r"```json\s*\n(.*?)\n```", section, flags=re.S)
+    if not m:
+        return [], (["Weryfikacja: blok odczytow musi zaczynac sie od ```json i byc zamkniety ```"]
+                    if "```" in section else [])
+    try:
+        checks = json.loads(m.group(1))
+    except json.JSONDecodeError as e:
+        return [], [f"Weryfikacja: niepoprawny JSON ({e})"]
+    if not isinstance(checks, list):
+        return [], ["Weryfikacja: blok musi byc lista odczytow"]
+    errs = []
+    for j, c in enumerate(checks, start=1):
+        if not isinstance(c, dict) or not str(c.get("opis", "")).strip() or not isinstance(c.get("url"), str):
+            errs.append(f"Weryfikacja, odczyt {j}: wymagane pola opis i url")
+            continue
+        if not resource_for_url(c["url"]):
+            errs.append(f"Weryfikacja, odczyt {j}: host spoza listy dozwolonych")
+        if "sciezka" in c and (not isinstance(c["sciezka"], list) or not all(isinstance(k, str) for k in c["sciezka"])):
+            errs.append(f"Weryfikacja, odczyt {j}: 'sciezka' musi byc lista tekstow")
+        if "status" in c and (not isinstance(c["status"], int) or isinstance(c["status"], bool)):
+            errs.append(f"Weryfikacja, odczyt {j}: 'status' musi byc liczba (kod HTTP)")
+    return checks, errs
 
 
 def check_plan(text: str) -> tuple[list[str], list[dict]]:
@@ -518,6 +668,7 @@ def check_plan(text: str) -> tuple[list[str], list[dict]]:
             errs.append("plan nie zawiera zadnego kroku do wykonania")
         for i, s in enumerate(steps, start=1):
             errs.extend(step_problems(s if isinstance(s, dict) else {}, i))
+        errs.extend(parse_checks(text)[1])
         if any(isinstance(s, dict) and s.get("typ") == "flow-patch" for s in steps):
             for name in FLOW_PATCH_SECTIONS:
                 if len(_strip_comments(sections.get(name, ""))) < 20:

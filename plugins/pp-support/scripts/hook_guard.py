@@ -184,7 +184,7 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash") -> tuple[str | N
                          "kazdej innej roznicy przywroci kopie.")
             return "ask", (f"ZMIANA W SRODOWISKU. Zgloszenie {args[1]}, krok {args[2]}: {step['opis']} | "
                            f"{C.step_summary(step)}.{extra} Zatwierdz tylko jesli to dokladnie zaakceptowany krok.")
-        if sub == "get":
+        if sub in ("get", "runs"):
             for target in out_targets(args):
                 problem = C.out_path_problem(cwd, target)
                 if problem:
@@ -192,7 +192,8 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash") -> tuple[str | N
                 decision, reason = guard_write(str(Path(cwd) / target), cwd)
                 if decision:
                     return decision, reason
-        if sub in {"get", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke", "config", ""}:
+        if sub in {"get", "runs", "verify", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke",
+                   "config", ""}:
             return "allow", "pp-support: operacja tylko do odczytu lub na lokalnych plikach zgloszenia"
         return "deny", f"Nieznana komenda ppcall: {sub}"
     if STATE_RE.search(s):
@@ -246,6 +247,19 @@ def guard_command(cmd: str, cwd: str, dialect: str = "bash") -> tuple[str | None
     return worst
 
 
+def _in_backup(path: str, cwd: str | None) -> bool:
+    if not path:
+        return False
+    p = Path(path).expanduser()
+    try:
+        p = p.resolve()
+        parts = p.relative_to(C.incidents_root(cwd or os.getcwd()).expanduser().resolve()).parts
+    except (ValueError, OSError):
+        parts = ()
+    return bool(re.search(r"/zgloszenia/[^/]+/backup(/|$)", str(p).replace("\\", "/"), re.I)
+                or (len(parts) >= 2 and parts[1].rstrip(". ").lower() == C.BACKUP_DIR_NAME))
+
+
 def guard_write(path: str, cwd: str | None = None) -> tuple[str | None, str]:
     p = Path(path).expanduser()
     try:
@@ -271,6 +285,9 @@ def guard_write(path: str, cwd: str | None = None) -> tuple[str | None, str]:
     if (re.search(r"/zgloszenia/[^/]+/wykonanie\.jsonl$", text)
             or (len(parts) == 2 and parts[1].rstrip(". ").lower() == "wykonanie.jsonl")):
         return "deny", "Dziennik wykonania prowadzi wylacznie ppcall."
+    if (re.search(r"/zgloszenia/[^/]+/weryfikacja\.jsonl$", text)
+            or (len(parts) == 2 and parts[1].rstrip(". ").lower() == C.VERIFY_LOG)):
+        return "deny", "Wyniki weryfikacji zapisuje wylacznie ppcall verify."
     if (re.search(r"/zgloszenia/[^/]+/backup(/|$)", text, re.I)
             or (len(parts) >= 2 and parts[1].rstrip(". ").lower() == C.BACKUP_DIR_NAME)):
         return "deny", "Kopie definicji flow w backup/ zapisuje wylacznie ppcall exec."
@@ -283,6 +300,52 @@ MCP_WRITE_RE = re.compile(r"create|update|delete|upsert|insert|set|patch|post|pu
                           r"stop|enable|disable|deploy|import|publish|remove|write|execute|invoke", re.I)
 
 
+# Przegladarka (Claude in Chrome, przegladarka w aplikacji): lista narzedzi i akcji tylko do odczytu
+# przechodzi bez pytan, wgrywanie plikow jest zablokowane, wszystko inne (takze nieznane) za zgoda.
+BROWSER_TOOL_RE = re.compile(r"^mcp__(claude-in-chrome|Claude_Browser)__")
+BROWSER_READ_TOOLS = {"read_page", "get_page_text", "find", "tabs_context", "tabs_context_mcp", "tabs_create",
+                      "tabs_create_mcp", "tabs_close", "tabs_close_mcp", "tabs_select", "resize_window",
+                      "shortcuts_list", "list_connected_browsers", "select_browser", "switch_browser",
+                      "preview_list", "preview_logs", "read_console_messages", "read_network_requests"}
+BROWSER_READ_ACTIONS = {"screenshot", "scroll", "scroll_to", "hover", "mouse_move", "wait", "zoom",
+                        "cursor_position"}
+BROWSER_DENY_TOOLS = {"file_upload", "upload_image"}
+
+
+def _browser_ask(what: str) -> tuple[str, str]:
+    return "ask", f"Przegladarka: {what}. Moze zmienic dane w aplikacji. Zatwierdz tylko, jesli rozumiesz skutek."
+
+
+def browser_decision(name: str, tin) -> tuple[str | None, str]:
+    name = name.split("__")[-1]
+    if not isinstance(tin, dict):
+        return "ask", "Przegladarka: nierozpoznane wejscie narzedzia."
+    if name in BROWSER_DENY_TOOLS:
+        return "deny", "Wgrywanie plikow przez przegladarke jest zablokowane."
+    if name == "navigate":
+        url = str(tin.get("url", "")).strip().lower()
+        if url in ("back", "forward") or re.match(r"(https?://|[a-z0-9.-]+\.[a-z]{2,}(/|$|:))", url):
+            return None, ""
+        return "deny", "Przegladarka: dozwolone sa tylko adresy http(s), bez javascript:, data: i file:."
+    if name in BROWSER_READ_TOOLS:
+        return None, ""
+    if name == "computer":
+        if tin.get("action") in BROWSER_READ_ACTIONS:
+            return None, ""
+        return _browser_ask(str(tin.get("action_summary") or tin.get("action") or "nieznana akcja"))
+    if name == "browser_batch":
+        actions = tin.get("actions")
+        if not isinstance(actions, list) or not actions:
+            return "ask", "Przegladarka: nierozpoznana lista akcji."
+        results = []
+        for a in actions:
+            if not isinstance(a, dict) or not isinstance(a.get("name"), str):
+                return "ask", "Przegladarka: nierozpoznana akcja w serii."
+            results.append(browser_decision(a["name"], a.get("input") if "input" in a else {}))
+        return max(results, key=lambda d: RANK[d[0]])
+    return _browser_ask(str(tin.get("action_summary") or name))
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
@@ -292,8 +355,13 @@ def main() -> None:
         if tool in ("Bash", "PowerShell"):
             dialect = "powershell" if tool == "PowerShell" else "bash"
             decision, reason = guard_command(str(tin.get("command", "")), cwd, dialect)
+        elif tool == "Read" and _in_backup(str(tin.get("file_path") or ""), cwd):
+            decision, reason = "deny", ("Kopie definicji flow moga zawierac hasla. Do wycofania sluzy krok odwrotny "
+                                        "z plan-check, nie odczyt kopii.")
         elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
             decision, reason = guard_write(str(tin.get("file_path") or tin.get("notebook_path") or ""), cwd)
+        elif BROWSER_TOOL_RE.match(tool):
+            decision, reason = browser_decision(tool.split("__")[-1], tin)
         elif tool.startswith("mcp__") and MCP_SCOPE_RE.search(tool):
             action = tool.split("__")[-1]
             if MCP_WRITE_RE.search(action):

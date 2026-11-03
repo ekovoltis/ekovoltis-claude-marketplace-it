@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "pp-support",
   "displayName": "Wsparcie automatyzacji Power Platform",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Wsparcie dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform: diagnoza odczytem, plan naprawy, wykonanie wyłącznie po jawnej akceptacji pracownika.",
   "author": { "name": "Ekovoltis IT" },
   "keywords": ["power-platform", "power-automate", "dataverse", "fabric", "sharepoint", "support"],
@@ -63,6 +63,18 @@
       "multiple": true,
       "title": "Środowiska z dozwolonym krokiem flow-patch",
       "description": "Adresy Dataverse, w których plan może zmienić wartość w istniejącej akcji flow. Puste: krok wyłączony"
+    },
+    "salesbook_api_url": {
+      "type": "string",
+      "title": "Adres API Salesbooka",
+      "description": "Np. https://ekov-api.salesbook-ent.com/api/v1. Puste: odczyt z Salesbooka wyłączony",
+      "default": ""
+    },
+    "salesbook_auth_flow": {
+      "type": "string",
+      "title": "Źródło danych logowania do API Salesbooka",
+      "description": "<adres Dataverse>|<workflowid>|<nazwa akcji HTTP> flow integracji, z której ppcall bierze dane logowania Basic",
+      "default": ""
     }
   }
 }

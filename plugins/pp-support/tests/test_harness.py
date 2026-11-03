@@ -662,7 +662,7 @@ expect("incidents_dir: wykonanie.jsonl chroniony",
        decision(str(INC / "INC-5" / "wykonanie.jsonl"), "Write"), "deny")
 expect("incidents_dir: backup chroniony", decision(str(INC / "INC-5" / "backup" / "k.json"), "Write"), "deny")
 r = subprocess.run([BASH, PPCALL, "plan-new", "INC-5"], cwd=WORK, capture_output=True, text=True,
-                   encoding="utf-8", errors="replace", env=os.environ)
+                   encoding="utf-8", errors="replace", env=os.environ, timeout=120)
 expect("incidents_dir: plan-new w stalym katalogu", (INC / "INC-5" / "plan.md").exists(), True)
 expect("incidents_dir: wzgledna sciezka zgloszona", len(C.config_problems({**C.DEFAULT_CONFIG, "incidents_dir": "zgl"})), 1)
 cfg["incidents_dir"] = "wzgledny"
@@ -670,6 +670,409 @@ C.save_config(cfg)
 expect("incidents_dir: wzgledna sciezka liczona od katalogu sesji", C.incident_dir(WORK, "INC-5"), WORK / "wzgledny" / "INC-5")
 cfg["incidents_dir"] = ""
 C.save_config(cfg)
+
+print("16. flow-patch: akcja Compose i zmienne (ITS-416)")
+P = importlib.reload(P)
+WF2 = "444c3e1d-b88f-ef11-8a69-000d3aaf3da8"
+TYPE_OLD = "@if(equals(body('X')?['SA_CONSENTS_ELECTRONIC_INVOICE'], true), 'Faktura elektroniczna', 'Faktura papierowa')"
+MAIL_OLD = "@{body('Parse_JSON_-_fields.data.form')?['consents']?['electronicInvoiceEmail']}"
+MAIL_NEW = "@{coalesce(body('Parse_JSON_-_fields.data.form')?['clientContactPerson']?['email'], '')}"
+DEF2 = {"properties": {"definition": {"triggers": {}, "actions": {
+    "Agreement_-_Gas_and_electricity": {"type": "Scope", "actions": {
+        "Compose_Invoice_Type": {"type": "Compose", "runAfter": {}, "inputs": TYPE_OLD}}},
+    "Initialize_variable_-_EmailFaktura": {"type": "InitializeVariable", "runAfter": {},
+                                           "inputs": {"variables": [{"name": "EmailFaktura", "type": "string",
+                                                                     "value": MAIL_OLD}]}},
+    "Set_variable": {"type": "SetVariable", "inputs": {"name": "X", "value": "a"}},
+    "Http": {"type": "Http", "inputs": {"method": "GET", "uri": "https://x", "body": "@{x}"}}}}}}
+COMPOSE = ["properties", "definition", "actions", "Agreement_-_Gas_and_electricity", "actions", "Compose_Invoice_Type", "inputs"]
+VARIABLE = ["properties", "definition", "actions", "Initialize_variable_-_EmailFaktura", "inputs", "variables", "0", "value"]
+expect("Compose: cale inputs dozwolone", C.flow_patch_path_problem(COMPOSE), None)
+expect("zmienna: variables/0/value dozwolone", C.flow_patch_path_problem(VARIABLE), None)
+expect("zmienna: variables/0/name odrzucone",
+       C.flow_patch_path_problem(VARIABLE[:-1] + ["name"]) is not None, True)
+expect("etykieta Compose", C.flow_patch_label(COMPOSE), "Compose_Invoice_Type: inputs")
+expect("get_at z indeksem listy", C.get_at(DEF2, VARIABLE), MAIL_OLD)
+copy2 = copy.deepcopy(DEF2)
+C.set_at(copy2, VARIABLE, MAIL_NEW)
+expect("set_at z indeksem listy", C.leaf_diff(DEF2, copy2), [tuple(VARIABLE)])
+
+
+def live(step_changes, definition=DEF2):
+    wf = {"ismanaged": False, "category": 5, "modifiedon": "2026-10-07T07:21:50Z",
+          "clientdata": json.dumps(definition, ensure_ascii=False)}
+    return C.flow_patch_live_problems({"oczekiwany_modifiedon": "2026-10-07T07:21:50Z", "zmiany": step_changes}, wf)[0]
+
+
+expect("Compose na zywo: zgodne", live([{"sciezka": COMPOSE, "bylo": TYPE_OLD, "ma_byc": "Faktura elektroniczna"},
+                                        {"sciezka": VARIABLE, "bylo": MAIL_OLD, "ma_byc": MAIL_NEW}]), [])
+http_inputs = ["properties", "definition", "actions", "Http", "inputs"]
+expect("cale inputs akcji Http odrzucone na zywo",
+       any("Compose" in e for e in live([{"sciezka": http_inputs, "bylo": "x", "ma_byc": "y"}])), True)
+fake_var = ["properties", "definition", "actions", "Set_variable", "inputs", "variables", "0", "value"]
+expect("variables w SetVariable odrzucone na zywo",
+       bool(live([{"sciezka": fake_var, "bylo": "a", "ma_byc": "b"}])), True)
+expect("SetVariable: inputs/value na zywo",
+       live([{"sciezka": ["properties", "definition", "actions", "Set_variable", "inputs", "value"], "bylo": "a",
+              "ma_byc": "b"}]), [])
+
+expect("indeks listy: cyfra spoza ASCII odrzucona",
+       C.flow_patch_path_problem(VARIABLE[:-2] + ["²", "value"]) is not None, True)
+expect("indeks listy: zero wiodace odrzucone", C.flow_patch_path_problem(VARIABLE[:-2] + ["00", "value"]) is not None, True)
+try:
+    C.get_at({"a": [1]}, ["a", "²"])
+    expect("get_at: cyfra spoza ASCII", "brak bledu", "KeyError")
+except KeyError:
+    expect("get_at: cyfra spoza ASCII", "KeyError", "KeyError")
+
+print("17. Odczyt hurtowy: get --all i ppcall runs")
+pages = {
+    f"{DV}/api/data/v9.2/workflows?$top=2": {"value": [{"n": 1}, {"n": 2}],
+                                             "@odata.nextLink": f"{DV}/api/data/v9.2/workflows?$skiptoken=2"},
+    f"{DV}/api/data/v9.2/workflows?$skiptoken=2": {"value": [{"n": 3}]},
+    f"{DV}/api/data/v9.2/zly?$top=1": {"value": [{"n": 1}], "@odata.nextLink": "https://evil.example.com/next"},
+}
+P.http = lambda m, u, b=None, timeout=90, headers=None: (200, json.dumps(pages[u]).encode("utf-8"))
+status, body = P.get_all(f"{DV}/api/data/v9.2/workflows?$top=2", 50)
+expect("get --all: strony polaczone", (status, len(json.loads(body)["value"]), json.loads(body)["niepelne"]), (200, 3, False))
+status, body = P.get_all(f"{DV}/api/data/v9.2/workflows?$top=2", 1)
+expect("get --all: limit stron", json.loads(body)["niepelne"], True)
+try:
+    P.get_all(f"{DV}/api/data/v9.2/zly?$top=1", 50)
+    expect("get --all: nastepna strona na inny host", "brak bledu", "RuntimeError")
+except RuntimeError:
+    expect("get --all: nastepna strona na inny host", "RuntimeError", "RuntimeError")
+
+ENV = "e3a3a7e8-1b2a-e86a-a007-952d0260d158"
+FLOW = "5db1ee6c-daa7-62a4-e8fb-f15ec825c682"
+RB = f"https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/{ENV}/flows/{FLOW}/runs"
+SAS_OUT = SAS.replace("ActionOutputs", "Out")
+
+
+def flow_api(m, u, b=None, timeout=90, headers=None):
+    if u == f"{RB}?api-version=2016-11-01":
+        return 200, json.dumps({"value": [
+            {"name": "r3", "properties": {"startTime": "2026-11-02T10:00:00Z", "status": "Succeeded"}},
+            {"name": "r2", "properties": {"startTime": "2026-10-23T05:38:00Z", "status": "Failed"}}],
+            "nextLink": f"{RB}?api-version=2016-11-01&page=2"}).encode()
+    if u == f"{RB}?api-version=2016-11-01&page=2":
+        return 200, json.dumps({"value": [
+            {"name": "r1", "properties": {"startTime": "2026-10-01T00:00:00Z", "status": "Succeeded"}}]}).encode()
+    if u.startswith(f"{RB}/r"):
+        return 200, json.dumps({"properties": {"startTime": "x", "status": "Succeeded",
+                                               "trigger": {"status": "Succeeded", "inputsLink": {"uri": SAS}},
+                                               "actions": {"HTTP": {"status": "Succeeded", "outputsLink": {"uri": SAS_OUT}},
+                                                           "Compose": {"status": "Succeeded"}}}}).encode()
+    if u == SAS:
+        return 200, b'{"body": {"id": "doc-1"}}'
+    if u == SAS_OUT:
+        return 200, b'{"statusCode": 200}'
+    return 404, b"{}"
+
+
+P.http = flow_api
+target = WORK / "zgloszenia/INC-1/przebiegi.jsonl"
+with contextlib.redirect_stdout(io.StringIO()):
+    P.cmd_runs([ENV, FLOW, "--out", str(target), "--od", "2026-10-15", "--wejscia", "trigger", "--wyjscia", "HTTP"])
+rows = [json.loads(l) for l in target.read_text(encoding="utf-8").splitlines()]
+expect("runs: filtr --od zatrzymuje na starszych", [r["name"] for r in rows], ["r3", "r2"])
+expect("runs: wejscia wyzwalacza", rows[0]["akcje"]["trigger"].get("wejscia"), {"body": {"id": "doc-1"}})
+expect("runs: wyjscia akcji", rows[0]["akcje"]["HTTP"].get("wyjscia"), {"statusCode": 200})
+expect("runs: bez tresci dla innych akcji", "wyjscia" in rows[0]["akcje"]["Compose"], False)
+with contextlib.redirect_stdout(io.StringIO()):
+    P.cmd_runs([ENV, FLOW, "--out", str(target)])
+expect("runs: bez --akcje tylko lista, z kolejna strona",
+       [(r["name"], "akcje" in r) for r in (json.loads(l) for l in target.read_text(encoding="utf-8").splitlines())],
+       [("r3", False), ("r2", False), ("r1", False)])
+bad_pages = {"next": f"{DV}/api/data/v9.2/accounts", "link": f"{DV}/api/data/v9.2/x"}
+
+
+def flow_api_bad(m, u, b=None, timeout=90, headers=None):
+    if u == f"{RB}?api-version=2016-11-01":
+        return 200, json.dumps({"value": [{"name": "r9", "properties": {"startTime": "2026-11-02T10:00:00Z"}}],
+                                "nextLink": bad_pages["next"]}).encode()
+    if u.startswith(f"{RB}/r9"):
+        return 200, json.dumps({"properties": {"actions": {"HTTP": {"outputsLink": {"uri": bad_pages["link"]}}}}}).encode()
+    calls.append(u)
+    return 200, b'{"value": []}'
+
+
+calls.clear()
+P.http = flow_api_bad
+target2 = WORK / "zgloszenia/INC-1/przebiegi2.jsonl"
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        P.cmd_runs([ENV, FLOW, "--out", str(target2), "--wyjscia", "HTTP"])
+        code = None
+    except SystemExit as e:
+        code = e.code
+expect("runs: nastepna strona na inny adres przerywa", code, 2)
+expect("runs: zadne zapytanie poza Flow API i SAS", calls, [])
+expect("runs: przerwany odczyt nie zostawia pliku wynikowego", target2.exists(), False)
+P.http = flow_api
+for label, cmd in [("runs bez --out", f"{Q} runs {ENV} {FLOW}"),
+                   ("runs --out poza zgloszeniem", f"{Q} runs {ENV} {FLOW} --out ../x.jsonl"),
+                   ("runs --out do wykonanie.jsonl", f"{Q} runs {ENV} {FLOW} --out zgloszenia/INC-1/wykonanie.jsonl")]:
+    expect(label, decision(cmd), "allow" if label == "runs bez --out" else "deny")
+r = ppcall("runs", ENV, FLOW)
+expect("runs bez --out: ppcall odmawia", r.returncode, 1)
+
+print("18. Weryfikacja po naprawie (ppcall verify)")
+VPLAN = PLAN.replace("INC-1", "VER-1").replace(
+    "Odczyt stanu flow zwraca Started, a najbliższy przebieg o 14:00 kończy się statusem Succeeded.",
+    "Odczyt stanu flow zwraca Started.\n```json\n"
+    '[{"opis": "Flow wlaczony", "url": "https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/'
+    'environments/env1/flows/abc?api-version=2016-11-01", "sciezka": ["properties", "state"], '
+    '"oczekiwane": "Started"}]\n```')
+vdir = WORK / "zgloszenia/VER-1"
+vdir.mkdir(parents=True, exist_ok=True)
+(vdir / "plan.md").write_text(VPLAN, encoding="utf-8")
+expect("verify: plan z odczytami przechodzi walidacje", C.check_plan(VPLAN)[0], [])
+expect("verify: odczyt z obcym hostem odrzucony",
+       bool(C.check_plan(VPLAN.replace("https://api.flow.microsoft.com/providers", "https://evil.example.com/p"))[0]), True)
+state = {"v": "Started"}
+P.http = lambda m, u, b=None, timeout=90, headers=None: (200, json.dumps({"properties": {"state": state["v"]}}).encode())
+
+
+def verify_code(incident="VER-1"):
+    with contextlib.redirect_stdout(io.StringIO()):
+        try:
+            P.cmd_verify([incident])
+        except SystemExit as e:
+            return e.code
+    return None
+
+
+expect("verify: plan bez akceptacji odrzucony", verify_code(), 3)
+(vdir / "wykonanie.jsonl").write_text(json.dumps({"krok": 1, "skrot_planu": C.plan_hash(VPLAN), "sukces": True}) + "\n",
+                                      encoding="utf-8")
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        P.cmd_verify(["VER-1"])
+        code = None
+    except SystemExit as e:
+        code = e.code
+expect("verify: zgodny stan", code, None)
+state["v"] = "Stopped"
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        P.cmd_verify(["VER-1"])
+        code = None
+    except SystemExit as e:
+        code = e.code
+expect("verify: niezgodny stan", code, 5)
+vlog = [json.loads(l) for l in (vdir / "weryfikacja.jsonl").read_text(encoding="utf-8").splitlines()]
+expect("verify: dziennik", [v["ok"] for v in vlog], [True, False])
+expect("verify: dozwolone bez akceptacji", decision(f"{Q} verify VER-1"), "allow")
+expect("verify: zapis do weryfikacja.jsonl zablokowany", decision(str(vdir / "weryfikacja.jsonl"), "Write"), "deny")
+(vdir / "plan.md").write_text(VPLAN.replace('"oczekiwane": "Started"', '"status": 200'), encoding="utf-8")
+expect("verify: zmienione odczyty po akceptacji odrzucone", verify_code(), 3)
+(vdir / "plan.md").write_text(VPLAN, encoding="utf-8")
+expect("verify: blok ``` json (zly zapis) odrzucony", bool(C.check_plan(VPLAN.replace("```json\n[", "``` JSON\n[", 1))[0]), True)
+expect("verify: zakomentowany blok nie jest wykonywany",
+       C.parse_checks(VPLAN.replace("```json\n[", "<!-- ```json\n[", 1).replace("]\n```", "]\n``` -->", 1)), ([], []))
+expect("verify: --out do weryfikacja.jsonl zablokowany",
+       decision(f'{Q} get "{DV}/api/data/v9.2/WhoAmI" --out zgloszenia/VER-1/weryfikacja.jsonl'), "deny")
+
+print("19. Salesbook: API (dane logowania z flow) i odczyt plikow")
+P = importlib.reload(P)
+SB_API = "https://ekov-api.salesbook-ent.com/api/v1"
+SB_ACTION = "HTTP_-_Get_All_Filles_Connected_With_ID"
+SB_DEF = {"properties": {"definition": {"actions": {"Condition_for_agreements": {"type": "If", "actions": {}, "else": {
+    "actions": {SB_ACTION: {"type": "Http", "inputs": {"method": "GET", "uri": f"{SB_API}/documents/@{{x}}/files",
+                                                       "authentication": {"type": "Basic", "username": "ekov",
+                                                                          "password": "tajne-haslo"}}}}}}}}}}
+cfg = C.load_config()
+expect("Salesbook wylaczony bez ustawien", C.salesbook_auth_source(cfg.get("salesbook_auth_flow") or ""), None)
+cfg.update({"salesbook_api_url": SB_API, "salesbook_auth_flow": f"{DV}|{WF2}|{SB_ACTION}"})
+C.save_config(cfg)
+sb_cfg = {**C.DEFAULT_CONFIG, "salesbook_api_url": SB_API, "salesbook_auth_flow": f"{DV}|{WF2}|{SB_ACTION}"}
+expect("config_problems: poprawne ustawienia Salesbooka", C.config_problems(sb_cfg), [])
+expect("config_problems: zly format zrodla",
+       len(C.config_problems({**sb_cfg, "salesbook_auth_flow": "https://evil.example.com|x|y"})), 1)
+expect("config_problems: obcy host API",
+       len(C.config_problems({**sb_cfg, "salesbook_api_url": "https://evil.example.com/api"})), 1)
+
+sent_sb, opened = [], []
+
+
+class _SbResp(_Resp):
+    def read(self):
+        return b'{"data": {"files": []}}'
+
+
+class _Opener:
+    def __init__(self, handlers):
+        self.handlers = handlers
+
+    def open(self, req, timeout=90):
+        sent_sb.append({"url": req.full_url, "headers": dict(req.header_items()), "method": req.get_method(),
+                        "no_redirect": any(h is P._NoRedirect for h in self.handlers)})
+        return _SbResp()
+
+
+def _dv_urlopen(req, timeout=90):
+    opened.append(req.full_url)
+
+    class R(_Resp):
+        def read(self):
+            return json.dumps({"clientdata": json.dumps(SB_DEF)}).encode("utf-8")
+    return R()
+
+
+real_open, real_build = _ur.urlopen, _ur.build_opener
+_ur.urlopen, _ur.build_opener = _dv_urlopen, lambda *h: _Opener(h)
+P.get_token = lambda resource: "t"
+try:
+    P.http("GET", f"{SB_API}/documents/abc/files")
+    auth = sent_sb[-1]["headers"].get("Authorization", "")
+    expect("Salesbook API: Basic z akcji flow", auth == "Basic " + __import__("base64").b64encode(b"ekov:tajne-haslo").decode(), True)
+    expect("Salesbook API: bez przekierowan", sent_sb[-1]["no_redirect"], True)
+    expect("Salesbook: dane logowania odczytane z Dataverse", [u for u in opened if f"workflows({WF2})" in u] != [], True)
+    P.http("GET", "https://ekov.salesbook-ent.com/signed_document/document/download/file/1?t=2")
+    expect("Salesbook plik: bez danych logowania", "Authorization" in sent_sb[-1]["headers"], False)
+    P.http("GET", "https://ekov-api.salesbook-ent.com/api/v10/x")
+    expect("Salesbook: inna sciezka niz API bez danych logowania", "Authorization" in sent_sb[-1]["headers"], False)
+    for label, call in [("Salesbook: POST odrzucony", lambda: P.http("POST", f"{SB_API}/documents", {})),
+                        ("Salesbook: dane logowania w adresie", lambda: P.http("GET", "https://u:p@ekov-api.salesbook-ent.com/api/v1/x"))]:
+        try:
+            call()
+            expect(label, "brak bledu", "RuntimeError")
+        except RuntimeError:
+            expect(label, "RuntimeError", "RuntimeError")
+    cfg["salesbook_api_url"] = ""
+    C.save_config(cfg)
+    try:
+        P.http("GET", f"{SB_API}/documents/abc/files")
+        expect("Salesbook wylaczony: odmowa", "brak bledu", "RuntimeError")
+    except RuntimeError:
+        expect("Salesbook wylaczony: odmowa", "RuntimeError", "RuntimeError")
+finally:
+    _ur.urlopen, _ur.build_opener = real_open, real_build
+cfg.update({"salesbook_api_url": "", "salesbook_auth_flow": ""})
+C.save_config(cfg)
+expect("Salesbook: curl zablokowany", decision(f'curl -u ekov:x "{SB_API}/documents/abc/files"'), "deny")
+expect("Salesbook: ppcall get dozwolony", decision(f'{Q} get "{SB_API}/documents/abc/files"'), "allow")
+expect("Salesbook: krok planu do API odrzucony",
+       bool(C.step_problems({"nr": 1, "opis": "x", "typ": "http", "metoda": "POST", "url": f"{SB_API}/documents"}, 1)), True)
+
+print("20. Hasla w odpowiedziach sa ukrywane")
+red = C.redact_secrets({"clientdata": json.dumps(SB_DEF), "list": [{"clientSecret": "s3"}], "name": "x"})
+expect("redact: haslo w clientdata", "tajne-haslo" in json.dumps(red), False)
+expect("redact: clientSecret w liscie", "s3" in json.dumps(red), False)
+expect("redact: reszta bez zmian", (red["name"], json.loads(red["clientdata"])["properties"]["definition"]["actions"]
+                                    ["Condition_for_agreements"]["else"]["actions"][SB_ACTION]["inputs"]["authentication"]["username"]),
+       ("x", "ekov"))
+P.http = lambda m, u, b=None, timeout=90, headers=None: (200, json.dumps({"clientdata": json.dumps(SB_DEF)}).encode())
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    P.cmd_get([f"{DV}/api/data/v9.2/workflows({WF2})?$select=clientdata"])
+expect("ppcall get: haslo nie trafia na ekran", "tajne-haslo" in buf.getvalue(), False)
+with contextlib.redirect_stdout(io.StringIO()):
+    P.cmd_get([f"{DV}/api/data/v9.2/workflows({WF2})?$select=clientdata", "--out", "zgloszenia/INC-1/def.json"])
+expect("ppcall get --out: haslo nie trafia do pliku",
+       "tajne-haslo" in (WORK / "zgloszenia/INC-1/def.json").read_text(encoding="utf-8"), False)
+
+print("21. Przegladarka: odczyt swobodnie, zmiany za zgoda")
+
+
+def browser(tool: str, tin: dict) -> str | None:
+    r = hook("hook_guard", {"tool_name": tool, "tool_input": tin, "cwd": str(WORK)})
+    return r["hookSpecificOutput"]["permissionDecision"] if r else None
+
+
+for prefix in ("mcp__claude-in-chrome__", "mcp__Claude_Browser__"):
+    expect(f"{prefix}navigate", browser(prefix + "navigate", {"url": "https://sb.ekovoltis.pl/"}), None)
+    expect(f"{prefix}get_page_text", browser(prefix + "get_page_text", {}), None)
+    expect(f"{prefix}zrzut ekranu", browser(prefix + "computer", {"action": "screenshot"}), None)
+    expect(f"{prefix}klikniecie", browser(prefix + "computer", {"action": "left_click", "action_summary": "Otwiera dokument"}), "ask")
+    expect(f"{prefix}wpisanie tekstu", browser(prefix + "computer", {"action": "type", "text": "x"}), "ask")
+    expect(f"{prefix}formularz", browser(prefix + "form_input", {"ref": "ref_1", "value": "x"}), "ask")
+    expect(f"{prefix}javascript", browser(prefix + "javascript_tool", {"text": "1"}), "ask")
+    expect(f"{prefix}wgrywanie pliku", browser(prefix + "file_upload", {}), "deny")
+expect("browser_batch z kliknieciem", browser("mcp__claude-in-chrome__browser_batch", {"actions": [
+    {"name": "navigate", "input": {"url": "https://sb.ekovoltis.pl"}},
+    {"name": "computer", "input": {"action": "left_click"}}]}), "ask")
+expect("browser_batch z wgraniem pliku", browser("mcp__claude-in-chrome__browser_batch", {"actions": [
+    {"name": "computer", "input": {"action": "left_click"}}, {"name": "file_upload", "input": {}}]}), "deny")
+expect("browser_batch tylko odczyt", browser("mcp__Claude_Browser__browser_batch", {"actions": [
+    {"name": "get_page_text", "input": {}}]}), None)
+
+for label, tool, tin, want in [
+    ("klikniecie srodkowym", "computer", {"action": "middle_click"}, "ask"),
+    ("wcisniecie przycisku myszy", "computer", {"action": "left_mouse_down"}, "ask"),
+    ("akcja bez nazwy", "computer", {}, "ask"),
+    ("najechanie kursorem", "computer", {"action": "hover"}, None),
+    ("upload_image", "upload_image", {}, "deny"),
+    ("shortcuts_execute", "shortcuts_execute", {}, "ask"),
+    ("nieznane narzedzie", "nowe_narzedzie", {}, "ask"),
+    ("navigate javascript:", "navigate", {"url": "javascript:alert(1)"}, "deny"),
+    ("navigate data:", "navigate", {"url": "data:text/html,x"}, "deny"),
+    ("navigate wstecz", "navigate", {"url": "back"}, None),
+    ("navigate bez protokolu", "navigate", {"url": "sb.ekovoltis.pl/dashboard"}, None),
+    ("batch: actions nie jest lista", "browser_batch", {"actions": "x"}, "ask"),
+    ("batch: element bez nazwy", "browser_batch", {"actions": [{"input": {}}]}, "ask"),
+    ("batch: input nie jest obiektem", "browser_batch", {"actions": [{"name": "computer", "input": "x"}]}, "ask"),
+    ("batch: nazwa z prefiksem", "browser_batch",
+     {"actions": [{"name": "mcp__claude-in-chrome__file_upload", "input": {}}]}, "deny"),
+]:
+    expect(f"przegladarka: {label}", browser("mcp__claude-in-chrome__" + tool, tin), want)
+
+print("22. Ukrywanie hasel: naglowki, adresy, tekst")
+for label, value, secret in [
+    ("naglowek Authorization", {"headers": {"Authorization": "Basic ZWtvdjp0YWpuZS1oYXNsbw=="}}, "ZWtvdjp0YWpuZS1oYXNsbw=="),
+    ("Basic w tekscie", {"msg": "uzyto Basic ZWtvdjp0YWpuZS1oYXNsbw== do"}, "ZWtvdjp0YWpuZS1oYXNsbw=="),
+    ("code= w adresie", {"uri": "https://x.azurewebsites.net/api/f?code=KLUCZ123&a=1"}, "KLUCZ123"),
+    ("haslo liczbowe", {"password": 123456}, "123456"),
+    ("JSON w tekscie ze spacja", {"s": ' {"pwd": "q-tajne"}'}, "q-tajne"),
+    ("token w kluczu", {"access_token": "eyJ0eXAi"}, "eyJ0eXAi"),
+]:
+    expect(f"redact: {label}", secret in json.dumps(C.redact_secrets(value), ensure_ascii=False), False)
+expect("redact: zwykly tekst bez zmian", C.redact_secrets({"opis": "Basic information", "code": "NotSpecified"}),
+       {"opis": "Basic information", "code": "NotSpecified"})
+expect("redact: adres tresci przebiegu zostaje", C.redact_secrets({"uri": SAS})["uri"], SAS)
+expect("redact: odpowiedz tekstowa", P.redact_payload(b"Authorization: Bearer abc.def.ghi123456"),
+       b"Authorization: Bearer ***")
+expect("redact: plik binarny bez zmian", P.redact_payload(b"%PDF-\xff\xfe"), b"%PDF-\xff\xfe")
+unchanged = json.dumps({"a": 1, "b": "x"}, indent=4).encode()
+expect("redact: odpowiedz bez hasel bez zmian bajt w bajt", P.redact_payload(unchanged), unchanged)
+expect("Read kopii definicji zablokowany",
+       hook("hook_guard", {"tool_name": "Read", "tool_input": {"file_path": str(WORK / "zgloszenia/FP-1/backup/x.json")},
+                           "cwd": str(WORK)})["hookSpecificOutput"]["permissionDecision"], "deny")
+expect("Read notatek dozwolony",
+       hook("hook_guard", {"tool_name": "Read", "tool_input": {"file_path": str(WORK / "zgloszenia/FP-1/notatki.md")},
+                           "cwd": str(WORK)}), None)
+
+print("23. Tokeny i dane logowania nie ida dalej")
+P = importlib.reload(P)
+cfg.update({"salesbook_api_url": SB_API, "salesbook_auth_flow": f"{DV}|{WF2}|{SB_ACTION}"})
+C.save_config(cfg)
+try:
+    P.http("GET", f"{SB_API}/../../admin/x")
+    expect("Salesbook: sciezka z .. odrzucona", "brak bledu", "RuntimeError")
+except RuntimeError:
+    expect("Salesbook: sciezka z .. odrzucona", "RuntimeError", "RuntimeError")
+cfg.update({"salesbook_api_url": "", "salesbook_auth_flow": ""})
+C.save_config(cfg)
+captured = {}
+
+
+def _cap_urlopen(req, timeout=90):
+    captured["redirected"] = dict(req.headers)
+    captured["unredirected"] = dict(req.unredirected_hdrs)
+    return _Resp()
+
+
+P.get_token = lambda resource: "tok"
+real_open = _ur.urlopen
+_ur.urlopen = _cap_urlopen
+try:
+    P.http("GET", f"{DV}/api/data/v9.2/WhoAmI")
+finally:
+    _ur.urlopen = real_open
+expect("token Microsoft nie idzie za przekierowaniem",
+       ("Authorization" in captured.get("unredirected", {}), "Authorization" in captured.get("redirected", {})),
+       (True, False))
 
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
