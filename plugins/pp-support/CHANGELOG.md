@@ -1,5 +1,12 @@
 # Zmiany w pp-support
 
+## 0.3.0 (2026-11-03)
+
+- `flow-patch` obejmuje całe `inputs` akcji Compose, `inputs/variables/<n>/value` w InitializeVariable i `inputs/value` w SetVariable. Typ akcji jest sprawdzany na aktualnej definicji, ścieżki mogą zawierać numery pozycji list.
+- `ppcall get --all` łączy wszystkie strony wyniku (tylko ten sam host). `ppcall runs` zapisuje historię przebiegów flow do pliku, z wynikami akcji i treścią wejść lub wyjść wskazanych akcji.
+- `ppcall verify <ID>` wykonuje odczyty z sekcji „Weryfikacja po naprawie” i zapisuje wynik w `weryfikacja.jsonl`, chronionym tak jak dziennik wykonania.
+- Skill: analiza skali na plikach zamiast pojedynczych odczytów, `verify` po naprawie, komentarz do Jiry po zgodzie pracownika, zasady ograniczania pracy ręcznej. README: instalacja w zakresie user, włączona na stałe.
+
 ## 0.2.0 (2026-11-03)
 
 - Nowy krok planu `flow-patch`: zmiana istniejących wartości tekstowych pod `inputs/parameters` albo `inputs/body` akcji jednego flow (najwyżej 5), domyślnie wyłączony, włączany per środowisko ustawieniem `flow_patch_dataverse_urls`. `plan-check` sprawdza go na aktualnej definicji i wypisuje różnice oraz krok wycofania. `exec` robi kopię, zapisuje z `If-Match` i porównuje definicję po zapisie; nieoczekiwana różnica albo błąd sprawdzenia po zapisie przywraca kopię. Plan z tym krokiem wymaga sekcji „Analiza wpływu” i „Test”. Zmiana niezmiennika 6.

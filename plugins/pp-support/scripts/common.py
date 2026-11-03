@@ -49,7 +49,8 @@ def valid_id(incident_id: str) -> bool:
     return bool(re.fullmatch(ID_RE, incident_id or ""))
 
 
-RESERVED_INCIDENT_FILES = {"plan.md", "wykonanie.jsonl"}
+VERIFY_LOG = "weryfikacja.jsonl"
+RESERVED_INCIDENT_FILES = {"plan.md", "wykonanie.jsonl", VERIFY_LOG}
 BACKUP_DIR_NAME = "backup"
 
 
@@ -72,7 +73,7 @@ def out_path_problem(cwd: str | Path, path: str) -> str | None:
         return where
     # Windows pomija koncowe kropki i spacje: "plan.md." to ten sam plik co plan.md
     if len(parts) == 2 and parts[1].rstrip(". ").lower() in RESERVED_INCIDENT_FILES:
-        return "--out: plan.md i wykonanie.jsonl nie moga byc nadpisane odpowiedzia HTTP."
+        return "--out: plan.md, wykonanie.jsonl i weryfikacja.jsonl nie moga byc nadpisane odpowiedzia HTTP."
     if parts[1].rstrip(". ").lower() == BACKUP_DIR_NAME:
         return "--out: kopie definicji w backup/ zapisuje wylacznie ppcall exec."
     if any(p.lower() == ".claude" for p in parts):
@@ -267,6 +268,11 @@ FLOW_PATCH_MAX_CHANGES = 5
 # Zmieniac wolno tylko wartosci pod inputs.parameters albo inputs.body. Klucze ponizej sa zabronione
 # na kazdym poziomie, bo przekierowuja wywolanie albo zmieniaja polaczenie.
 FLOW_PATCH_INPUT_ROOTS = {"parameters", "body"}
+# Wyjatki od INPUT_ROOTS: ksztalt sciezki pod inputs -> wymagany typ akcji (sprawdzany na zywej definicji).
+#   []                          cale inputs akcji Compose (wyrazenie albo tekst)
+#   ["variables", "<n>", "value"]  wartosc poczatkowa w InitializeVariable
+#   ["value"]                   wartosc w SetVariable
+FLOW_PATCH_TYPED_TARGETS = {"Compose", "InitializeVariable", "SetVariable"}
 FLOW_PATCH_FORBIDDEN_KEYS = {"uri", "method", "headers", "host", "authentication", "path", "pathtemplate",
                              "relativepath", "function", "operationid", "apimanagement", "queries"}
 FLOW_PATCH_FORBIDDEN_PREFIXES = ("connection", "serviceprovider")
@@ -383,14 +389,38 @@ def _split_flow_patch_path(path) -> tuple[int, str | None]:
             return -1, f"element '{head}' jest poza zakresem (dozwolona tylko zmiana wartosci w inputs akcji)"
 
 
+def is_index(key: str) -> bool:
+    """Numer pozycji listy w kanonicznej postaci ASCII ("0", "12"; nie "00", nie inne cyfry Unicode)."""
+    return bool(re.fullmatch(r"0|[1-9][0-9]*", key))
+
+
+def flow_patch_required_type(path: list[str]) -> str | None:
+    """Typ akcji wymagany dla sciezki spoza parameters/body; None, gdy typ nie ma znaczenia."""
+    i, problem = _split_flow_patch_path(path)
+    if problem:
+        return None
+    keys = path[i + 1:]
+    if not keys:
+        return "Compose"
+    if len(keys) == 3 and keys[0] == "variables" and is_index(keys[1]) and keys[2] == "value":
+        return "InitializeVariable"
+    if keys == ["value"]:
+        return "SetVariable"
+    return None
+
+
 def flow_patch_path_problem(path) -> str | None:
-    """Sciezka musi prowadzic przez akcje (takze zagniezdzone) do wartosci pod inputs.parameters albo inputs.body."""
+    """Sciezka musi prowadzic przez akcje (takze zagniezdzone) do wartosci pod inputs.parameters albo inputs.body,
+    albo do wartosci akcji Compose lub zmiennej (flow_patch_required_type)."""
     i, problem = _split_flow_patch_path(path)
     if problem:
         return problem
+    if flow_patch_required_type(path):
+        return None
     keys = path[i + 1:]
     if len(keys) < 2 or keys[0] not in FLOW_PATCH_INPUT_ROOTS:
-        return "zmienic mozna tylko wartosc pod inputs/parameters/<klucz> albo inputs/body/<klucz>"
+        return ("zmienic mozna tylko wartosc pod inputs/parameters/<klucz> albo inputs/body/<klucz>, cale inputs "
+                "akcji Compose albo wartosc zmiennej (inputs/variables/<n>/value, inputs/value)")
     bad = [k for k in keys if k.lower() in FLOW_PATCH_FORBIDDEN_KEYS
            or k.lower().startswith(FLOW_PATCH_FORBIDDEN_PREFIXES)]
     if bad:
@@ -401,7 +431,7 @@ def flow_patch_path_problem(path) -> str | None:
 def flow_patch_label(path: list[str]) -> str:
     """Nazwa akcji i klucz w jej inputs, czytelne dla czlowieka. Tylko dla sciezki po walidacji."""
     i, _ = _split_flow_patch_path(path)
-    return f"{path[i - 1]}: {'/'.join(path[i + 1:])}"
+    return f"{path[i - 1]}: {'/'.join(path[i + 1:]) or 'inputs'}"
 
 
 def flow_patch_problems(step: dict, nr: int) -> list[str]:
@@ -442,15 +472,23 @@ def flow_patch_problems(step: dict, nr: int) -> list[str]:
 
 
 def get_at(obj, path: list[str]):
+    """Klucze slownikow albo numery pozycji list (jako tekst), jak w leaf_diff."""
     for key in path:
-        if not isinstance(obj, dict) or key not in obj:
+        if isinstance(obj, dict) and key in obj:
+            obj = obj[key]
+        elif isinstance(obj, list) and is_index(key) and int(key) < len(obj):
+            obj = obj[int(key)]
+        else:
             raise KeyError(key)
-        obj = obj[key]
     return obj
 
 
 def set_at(obj, path: list[str], value) -> None:
-    get_at(obj, path[:-1])[path[-1]] = value
+    parent = get_at(obj, path[:-1])
+    if isinstance(parent, list):
+        parent[int(path[-1])] = value
+    else:
+        parent[path[-1]] = value
 
 
 def leaf_diff(a, b, prefix: tuple = ()) -> list[tuple]:
@@ -496,7 +534,40 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
             errs.append(f"{label}: aktualna wartosc nie jest tekstem")
         elif current != ch["bylo"]:
             errs.append(f"{label}: aktualna wartosc rozni sie od 'bylo'")
+        required = flow_patch_required_type(ch["sciezka"])
+        if required:
+            i, _ = _split_flow_patch_path(ch["sciezka"])
+            actual = get_at(definition, ch["sciezka"][:i]).get("type")
+            if actual != required:
+                errs.append(f"{label}: ta sciezka jest dozwolona tylko w akcji {required}, a akcja ma typ {actual}")
     return errs, definition
+
+
+def parse_checks(text: str) -> tuple[list[dict], list[str]]:
+    """Odczyty weryfikacyjne z bloku ```json w sekcji 'Weryfikacja po naprawie' (opcjonalny)."""
+    section = _strip_comments(split_sections(text).get("Weryfikacja po naprawie", ""))
+    m = re.search(r"```json\s*\n(.*?)\n```", section, flags=re.S)
+    if not m:
+        return [], (["Weryfikacja: blok odczytow musi zaczynac sie od ```json i byc zamkniety ```"]
+                    if "```" in section else [])
+    try:
+        checks = json.loads(m.group(1))
+    except json.JSONDecodeError as e:
+        return [], [f"Weryfikacja: niepoprawny JSON ({e})"]
+    if not isinstance(checks, list):
+        return [], ["Weryfikacja: blok musi byc lista odczytow"]
+    errs = []
+    for j, c in enumerate(checks, start=1):
+        if not isinstance(c, dict) or not str(c.get("opis", "")).strip() or not isinstance(c.get("url"), str):
+            errs.append(f"Weryfikacja, odczyt {j}: wymagane pola opis i url")
+            continue
+        if not resource_for_url(c["url"]):
+            errs.append(f"Weryfikacja, odczyt {j}: host spoza listy dozwolonych")
+        if "sciezka" in c and (not isinstance(c["sciezka"], list) or not all(isinstance(k, str) for k in c["sciezka"])):
+            errs.append(f"Weryfikacja, odczyt {j}: 'sciezka' musi byc lista tekstow")
+        if "status" in c and (not isinstance(c["status"], int) or isinstance(c["status"], bool)):
+            errs.append(f"Weryfikacja, odczyt {j}: 'status' musi byc liczba (kod HTTP)")
+    return checks, errs
 
 
 def check_plan(text: str) -> tuple[list[str], list[dict]]:
@@ -518,6 +589,7 @@ def check_plan(text: str) -> tuple[list[str], list[dict]]:
             errs.append("plan nie zawiera zadnego kroku do wykonania")
         for i, s in enumerate(steps, start=1):
             errs.extend(step_problems(s if isinstance(s, dict) else {}, i))
+        errs.extend(parse_checks(text)[1])
         if any(isinstance(s, dict) and s.get("typ") == "flow-patch" for s in steps):
             for name in FLOW_PATCH_SECTIONS:
                 if len(_strip_comments(sections.get(name, ""))) < 20:

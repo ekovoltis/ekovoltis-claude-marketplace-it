@@ -20,8 +20,10 @@ Cały ruch do Azure, Power Platform, Dataverse, SharePoint i Fabric idzie przez:
 | Komenda | Do czego |
 |---|---|
 | `rejestr <frazy>` | wyszukanie automatu w migawce rejestru |
-| `get "<url>" [--out zgloszenia/<ID>/plik] [--max-kb N]` | odczyt dowolnego API Microsoft z listy dozwolonych hostów; `--out` zapisuje tylko w katalogu zgłoszenia, nigdy do `plan.md` ani `wykonanie.jsonl` |
-| `plan-new <ID>` | założenie katalogu `zgloszenia/<ID>/` z `notatki.md` i `plan.md` |
+| `get "<url>" [--out <katalog zgłoszenia>/plik] [--max-kb N] [--all]` | odczyt dowolnego API Microsoft z listy dozwolonych hostów; `--all` łączy wszystkie strony wyniku; `--out` zapisuje tylko w katalogu zgłoszenia, nigdy do `plan.md`, `wykonanie.jsonl` ani `weryfikacja.jsonl` |
+| `runs <env-id> <flow> --out <plik.jsonl> [--od D] [--do D] [--max N] [--akcje] [--wejscia A,B] [--wyjscia A,B]` | historia przebiegów flow do pliku, z wynikiem każdej akcji i treścią wejść lub wyjść wskazanych akcji (`trigger` to wyzwalacz) |
+| `verify <ID>` | odczyty z sekcji „Weryfikacja po naprawie”, wynik do `weryfikacja.jsonl` |
+| `plan-new <ID>` | założenie katalogu zgłoszenia z `notatki.md` i `plan.md`; wypisuje jego pełną ścieżkę, której używaj w `--out` |
 | `plan-check <ID>` | walidacja planu i wyliczenie skrótu do akceptacji |
 | `status <ID>` | stan planu, akceptacji i wykonanych kroków |
 | `exec <ID> <nr>` | wykonanie jednego kroku zaakceptowanego planu |
@@ -56,6 +58,8 @@ Zbieraj dowody, nie domysły. Typowe źródła:
 - dane w Dataverse, których dotyczy problem,
 - listy i biblioteki SharePoint używane przez automat,
 - historia uruchomień pipeline'ów i notebooków w Fabric.
+
+Przy pytaniach o skalę i historię („od kiedy”, „ilu klientów”) nie odczytuj przebiegów pojedynczo. Pobierz je raz przez `ppcall runs` albo `ppcall get --all` do pliku w katalogu zgłoszenia i analizuj plik lokalnym skryptem. Skrypt nie łączy się z chmurą, tylko czyta pliki. Wejścia i wyjścia akcji (`--wejscia`, `--wyjscia`) to surowe dane: mogą zawierać dane osobowe i hasła. Pobieraj tylko akcje potrzebne do diagnozy, a w rozmowie i notatkach pokazuj wartości zamaskowane.
 
 Każde ustalenie zapisuj w `zgloszenia/<ID>/notatki.md`: czas, co sprawdzono (URL lub polecenie), wynik, wniosek, oznaczenie **FAKT** albo **HIPOTEZA**.
 
@@ -99,12 +103,16 @@ Gdy w kontekście pojawi się potwierdzenie `[pp-support] Pracownik zaakceptowa�
 
 1. Porównaj, jak pracownik opisał przyczynę i naprawę, z diagnozą. Jeśli rozumie to inaczej, nie wykonuj. Wyjaśnij różnicę i zaproponuj `ODWOŁUJĘ <ID>`.
 2. Wykonuj kroki po kolei, każdy osobnym poleceniem `ppcall exec <ID> <nr>`. Claude Code dodatkowo zapyta pracownika o zgodę na każdy krok.
-3. Po każdym kroku zweryfikuj efekt odczytem i powiedz pracownikowi, co widzisz.
+3. Po każdym kroku zweryfikuj efekt odczytem i powiedz pracownikowi, co widzisz. Po ostatnim kroku uruchom `ppcall verify <ID>`. Gdy skutek będzie widać dopiero później (np. następny przebieg flow), zaproponuj pracownikowi zaplanowanie ponownego `verify` na konkretną godzinę.
 4. Gdy krok się nie powiedzie albo efekt jest inny niż oczekiwany: zatrzymaj się. Nie improwizuj, nie próbuj „drobnej poprawki”. Wróć do etapu 3 z nową wiedzą. Nowy plan wymaga nowej akceptacji.
 
 ### 7. Zamknięcie
 
-Zapisz `zgloszenia/<ID>/raport.md`: objaw, przyczyna, co zrobiono (z odwołaniem do `wykonanie.jsonl`), wynik weryfikacji, co zostało do zrobienia. Dołącz propozycję wpisu „znany problem” dla autorów dokumentacji (objaw, przyczyna, jak potwierdzić, jak naprawić). Nie dopisuj go sam do ich dokumentacji. Jeśli pracownik chce, przygotuj treść komentarza do zgłoszenia w Jirze.
+Zapisz `zgloszenia/<ID>/raport.md`: objaw, przyczyna, co zrobiono (z odwołaniem do `wykonanie.jsonl`), wynik weryfikacji, co zostało do zrobienia. Dołącz propozycję wpisu „znany problem” dla autorów dokumentacji (objaw, przyczyna, jak potwierdzić, jak naprawić). Nie dopisuj go sam do ich dokumentacji. Przygotuj też treść komentarza do zgłoszenia w Jirze. Wyślij go dopiero po wyraźnym „tak” pracownika.
+
+## Jak ograniczać pracę ręczną
+
+Pracownik decyduje, Ty wykonujesz resztę. Nie pytaj o rzeczy, które możesz ustalić odczytem. Notatki, szkic planu, analizę wpływu i raport przygotowuj sam, bez czekania na polecenie. Pytaj tylko o decyzje: zrozumienie przyczyny, wybór naprawy, akceptację planu, wysyłkę komentarza. Skracać nie wolno akceptacji własnymi słowami i pytania przed każdym krokiem.
 
 ## Granice
 

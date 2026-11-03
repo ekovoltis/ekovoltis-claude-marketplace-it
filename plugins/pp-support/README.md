@@ -1,4 +1,4 @@
-# pp-support 0.2.0
+# pp-support 0.3.0
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -60,7 +60,7 @@ Dozwolone hosty dla tokenów: Graph, ARM, Power Automate, BAP, Power Platform AP
 
 Drobną, zdiagnozowaną poprawkę logiki (np. jedno wyrażenie w polu szablonu) można wykonać krokiem planu `flow-patch`. Krok jest domyślnie wyłączony. Włącza go ustawienie `flow_patch_dataverse_urls`, osobno dla każdego środowiska.
 
-- Zmienić można tylko istniejącą wartość tekstową pod `inputs/parameters` albo `inputs/body` istniejącej akcji, najwyżej 5 zmian w jednym flow na krok. Wyzwalacze, `runAfter`, `type`, warunki (`expression`), połączenia i klucze przekierowujące wywołanie (`uri`, `method`, `headers`, `host`, `authentication`, `path`, `pathTemplate`, `function` i podobne) są odrzucane, tak samo flow z rozwiązań zarządzanych.
+- Zmienić można tylko istniejącą wartość tekstową pod `inputs/parameters` albo `inputs/body` istniejącej akcji, całe `inputs` akcji Compose albo wartość zmiennej (`InitializeVariable`, `SetVariable`), najwyżej 5 zmian w jednym flow na krok. Typ akcji sprawdzany jest na aktualnej definicji. Wyzwalacze, `runAfter`, `type`, warunki (`expression`), połączenia i klucze przekierowujące wywołanie (`uri`, `method`, `headers`, `host`, `authentication`, `path`, `pathTemplate`, `function` i podobne) są odrzucane, tak samo flow z rozwiązań zarządzanych.
 - Pytanie Claude Code przed wykonaniem pokazuje wartości „było” i „ma być”.
 - Plan musi mieć sekcje „Analiza wpływu” i „Test”.
 - `plan-check` sprawdza na aktualnej definicji `modifiedon`, ścieżki i wartości `bylo`, wypisuje różnice i krok wycofania.
@@ -110,18 +110,19 @@ claude --plugin-dir ./pp-support
 
 Plugin ma `defaultEnabled: false`, bo jego hooki działają w całej sesji. Po instalacji z marketplace włącz go świadomie w sesjach dyżurnych: `claude plugin enable pp-support`, i uzupełnij ustawienia w `/plugin` (adresy Dataverse, ID środowisk, host i witryna SharePoint, obszary Fabric).
 
-Instalacja w zakresie `user` daje plugin w każdym folderze, ale włączony plugin uruchamia strażnika w każdej sesji, także przy zwykłej pracy z kodem (blokuje `curl`, `az rest`, zapisy ustawień). Dlatego w zakresie `user` zostaw go wyłączonego i włączaj tylko na dyżur. Ustawienie `incidents_dir` wskazuje stały katalog zgłoszeń, niezależny od folderu sesji. Puste oznacza `zgloszenia/` w folderze sesji.
+Instalacja w zakresie `user` daje plugin w każdym folderze. Włączony plugin uruchamia strażnika w każdej sesji, także przy zwykłej pracy z kodem: blokuje ruch do usług Microsoft z pominięciem `ppcall` (`curl`, `az rest`), zmieniające `az` i `pac` oraz zapis `.claude/settings*.json`. Git, npm i dotnet działają normalnie. Ustawienie `incidents_dir` wskazuje stały katalog zgłoszeń, niezależny od folderu sesji. Puste oznacza `zgloszenia/` w folderze sesji.
 
 ## Przygotowanie stanowiska dyżurnego na Windows
 
 1. Osobny folder dyżurny poza OneDrive i poza repozytoriami, np. `C:\Users\<login>\pp-dyzur`. Trafiają tam notatki ze zgłoszeń, czyli także dane klientów.
-2. Instalacja w zakresie tego folderu, żeby hooki działały tylko w sesjach dyżurnych:
+2. Instalacja dla całego konta, włączona na stałe (plugin działa w każdym folderze i każdej sesji):
    ```bash
    claude plugin marketplace add ekovoltis/ekovoltis-claude-marketplace-it
-   claude plugin install pp-support@ekovoltis-it --scope local --config dataverse_urls=https://<org>.crm4.dynamics.com --config pp_environment_ids=<GUID> --config sharepoint_host=<tenant>.sharepoint.com --config sharepoint_site=/sites/<Witryna>
-   claude plugin enable pp-support@ekovoltis-it --scope local
+   claude plugin install pp-support@ekovoltis-it --scope user --config dataverse_urls=https://<org>.crm4.dynamics.com --config pp_environment_ids=<GUID> --config sharepoint_host=<tenant>.sharepoint.com --config sharepoint_site=/sites/<Witryna> --config incidents_dir=C:\Users\<login>\pp-dyzur\zgloszenia
+   claude plugin enable pp-support@ekovoltis-it --scope user
    ```
-3. Osobna konfiguracja Azure CLI, żeby logowanie dyżurne nie zmieniało `az` w innej pracy. W `<folder>\.claude\settings.local.json` dopisz `"env": {"AZURE_CONFIG_DIR": "C:\\Users\\<login>\\.azure-pp-dyzur"}`.
+   Automatyczne aktualizacje: w sesji `/plugin`, zakładka Marketplaces, `ekovoltis-it`, Enable auto-update. Kto woli plugin tylko w sesjach dyżurnych, instaluje go z `--scope local` w folderze dyżurnym.
+3. Osobna konfiguracja Azure CLI dla dyżuru: w `C:\Users\<login>\.claude\settings.json` dopisz `"env": {"AZURE_CONFIG_DIR": "C:\\Users\\<login>\\.azure-pp-dyzur"}`. Przy instalacji `--scope local` wpis idzie do `<folder>\.claude\settings.local.json`, wtedy `az` w innej pracy zostaje bez zmian.
 4. Logowanie wykonuje człowiek, w PowerShell, z tą samą zmienną:
    ```bash
    $env:AZURE_CONFIG_DIR = 'C:\Users\<login>\.azure-pp-dyzur'
@@ -130,7 +131,7 @@ Instalacja w zakresie `user` daje plugin w każdym folderze, ale włączony plug
    pac auth create --name <nazwa> --environment https://<org>.crm4.dynamics.com
    ```
    Wyłączenie menedżera kont Windows (WAM) sprawia, że logowanie idzie przez przeglądarkę i nie dodaje konta do systemu. `--allow-no-subscriptions` jest potrzebne dla kont bez subskrypcji Azure.
-5. Sesja Claude Code otwarta w folderze dyżurnym, potem `/pp-support:sprawdz-dostepy`.
+5. Nowa sesja Claude Code, potem `/pp-support:sprawdz-dostepy`. Pracę nad kodem samego pluginu prowadź w sesji z wyłączonym pluginem.
 
 Testy harnessu, bez dostępu do chmury:
 

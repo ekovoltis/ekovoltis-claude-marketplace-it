@@ -662,7 +662,7 @@ expect("incidents_dir: wykonanie.jsonl chroniony",
        decision(str(INC / "INC-5" / "wykonanie.jsonl"), "Write"), "deny")
 expect("incidents_dir: backup chroniony", decision(str(INC / "INC-5" / "backup" / "k.json"), "Write"), "deny")
 r = subprocess.run([BASH, PPCALL, "plan-new", "INC-5"], cwd=WORK, capture_output=True, text=True,
-                   encoding="utf-8", errors="replace", env=os.environ)
+                   encoding="utf-8", errors="replace", env=os.environ, timeout=120)
 expect("incidents_dir: plan-new w stalym katalogu", (INC / "INC-5" / "plan.md").exists(), True)
 expect("incidents_dir: wzgledna sciezka zgloszona", len(C.config_problems({**C.DEFAULT_CONFIG, "incidents_dir": "zgl"})), 1)
 cfg["incidents_dir"] = "wzgledny"
@@ -670,6 +670,209 @@ C.save_config(cfg)
 expect("incidents_dir: wzgledna sciezka liczona od katalogu sesji", C.incident_dir(WORK, "INC-5"), WORK / "wzgledny" / "INC-5")
 cfg["incidents_dir"] = ""
 C.save_config(cfg)
+
+print("16. flow-patch: akcja Compose i zmienne (ITS-416)")
+P = importlib.reload(P)
+WF2 = "444c3e1d-b88f-ef11-8a69-000d3aaf3da8"
+TYPE_OLD = "@if(equals(body('X')?['SA_CONSENTS_ELECTRONIC_INVOICE'], true), 'Faktura elektroniczna', 'Faktura papierowa')"
+MAIL_OLD = "@{body('Parse_JSON_-_fields.data.form')?['consents']?['electronicInvoiceEmail']}"
+MAIL_NEW = "@{coalesce(body('Parse_JSON_-_fields.data.form')?['clientContactPerson']?['email'], '')}"
+DEF2 = {"properties": {"definition": {"triggers": {}, "actions": {
+    "Agreement_-_Gas_and_electricity": {"type": "Scope", "actions": {
+        "Compose_Invoice_Type": {"type": "Compose", "runAfter": {}, "inputs": TYPE_OLD}}},
+    "Initialize_variable_-_EmailFaktura": {"type": "InitializeVariable", "runAfter": {},
+                                           "inputs": {"variables": [{"name": "EmailFaktura", "type": "string",
+                                                                     "value": MAIL_OLD}]}},
+    "Set_variable": {"type": "SetVariable", "inputs": {"name": "X", "value": "a"}},
+    "Http": {"type": "Http", "inputs": {"method": "GET", "uri": "https://x", "body": "@{x}"}}}}}}
+COMPOSE = ["properties", "definition", "actions", "Agreement_-_Gas_and_electricity", "actions", "Compose_Invoice_Type", "inputs"]
+VARIABLE = ["properties", "definition", "actions", "Initialize_variable_-_EmailFaktura", "inputs", "variables", "0", "value"]
+expect("Compose: cale inputs dozwolone", C.flow_patch_path_problem(COMPOSE), None)
+expect("zmienna: variables/0/value dozwolone", C.flow_patch_path_problem(VARIABLE), None)
+expect("zmienna: variables/0/name odrzucone",
+       C.flow_patch_path_problem(VARIABLE[:-1] + ["name"]) is not None, True)
+expect("etykieta Compose", C.flow_patch_label(COMPOSE), "Compose_Invoice_Type: inputs")
+expect("get_at z indeksem listy", C.get_at(DEF2, VARIABLE), MAIL_OLD)
+copy2 = copy.deepcopy(DEF2)
+C.set_at(copy2, VARIABLE, MAIL_NEW)
+expect("set_at z indeksem listy", C.leaf_diff(DEF2, copy2), [tuple(VARIABLE)])
+
+
+def live(step_changes, definition=DEF2):
+    wf = {"ismanaged": False, "category": 5, "modifiedon": "2026-10-07T07:21:50Z",
+          "clientdata": json.dumps(definition, ensure_ascii=False)}
+    return C.flow_patch_live_problems({"oczekiwany_modifiedon": "2026-10-07T07:21:50Z", "zmiany": step_changes}, wf)[0]
+
+
+expect("Compose na zywo: zgodne", live([{"sciezka": COMPOSE, "bylo": TYPE_OLD, "ma_byc": "Faktura elektroniczna"},
+                                        {"sciezka": VARIABLE, "bylo": MAIL_OLD, "ma_byc": MAIL_NEW}]), [])
+http_inputs = ["properties", "definition", "actions", "Http", "inputs"]
+expect("cale inputs akcji Http odrzucone na zywo",
+       any("Compose" in e for e in live([{"sciezka": http_inputs, "bylo": "x", "ma_byc": "y"}])), True)
+fake_var = ["properties", "definition", "actions", "Set_variable", "inputs", "variables", "0", "value"]
+expect("variables w SetVariable odrzucone na zywo",
+       bool(live([{"sciezka": fake_var, "bylo": "a", "ma_byc": "b"}])), True)
+expect("SetVariable: inputs/value na zywo",
+       live([{"sciezka": ["properties", "definition", "actions", "Set_variable", "inputs", "value"], "bylo": "a",
+              "ma_byc": "b"}]), [])
+
+expect("indeks listy: cyfra spoza ASCII odrzucona",
+       C.flow_patch_path_problem(VARIABLE[:-2] + ["²", "value"]) is not None, True)
+expect("indeks listy: zero wiodace odrzucone", C.flow_patch_path_problem(VARIABLE[:-2] + ["00", "value"]) is not None, True)
+try:
+    C.get_at({"a": [1]}, ["a", "²"])
+    expect("get_at: cyfra spoza ASCII", "brak bledu", "KeyError")
+except KeyError:
+    expect("get_at: cyfra spoza ASCII", "KeyError", "KeyError")
+
+print("17. Odczyt hurtowy: get --all i ppcall runs")
+pages = {
+    f"{DV}/api/data/v9.2/workflows?$top=2": {"value": [{"n": 1}, {"n": 2}],
+                                             "@odata.nextLink": f"{DV}/api/data/v9.2/workflows?$skiptoken=2"},
+    f"{DV}/api/data/v9.2/workflows?$skiptoken=2": {"value": [{"n": 3}]},
+    f"{DV}/api/data/v9.2/zly?$top=1": {"value": [{"n": 1}], "@odata.nextLink": "https://evil.example.com/next"},
+}
+P.http = lambda m, u, b=None, timeout=90, headers=None: (200, json.dumps(pages[u]).encode("utf-8"))
+status, body = P.get_all(f"{DV}/api/data/v9.2/workflows?$top=2", 50)
+expect("get --all: strony polaczone", (status, len(json.loads(body)["value"]), json.loads(body)["niepelne"]), (200, 3, False))
+status, body = P.get_all(f"{DV}/api/data/v9.2/workflows?$top=2", 1)
+expect("get --all: limit stron", json.loads(body)["niepelne"], True)
+try:
+    P.get_all(f"{DV}/api/data/v9.2/zly?$top=1", 50)
+    expect("get --all: nastepna strona na inny host", "brak bledu", "RuntimeError")
+except RuntimeError:
+    expect("get --all: nastepna strona na inny host", "RuntimeError", "RuntimeError")
+
+ENV = "e3a3a7e8-1b2a-e86a-a007-952d0260d158"
+FLOW = "5db1ee6c-daa7-62a4-e8fb-f15ec825c682"
+RB = f"https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/{ENV}/flows/{FLOW}/runs"
+SAS_OUT = SAS.replace("ActionOutputs", "Out")
+
+
+def flow_api(m, u, b=None, timeout=90, headers=None):
+    if u == f"{RB}?api-version=2016-11-01":
+        return 200, json.dumps({"value": [
+            {"name": "r3", "properties": {"startTime": "2026-11-02T10:00:00Z", "status": "Succeeded"}},
+            {"name": "r2", "properties": {"startTime": "2026-10-23T05:38:00Z", "status": "Failed"}}],
+            "nextLink": f"{RB}?api-version=2016-11-01&page=2"}).encode()
+    if u == f"{RB}?api-version=2016-11-01&page=2":
+        return 200, json.dumps({"value": [
+            {"name": "r1", "properties": {"startTime": "2026-10-01T00:00:00Z", "status": "Succeeded"}}]}).encode()
+    if u.startswith(f"{RB}/r"):
+        return 200, json.dumps({"properties": {"startTime": "x", "status": "Succeeded",
+                                               "trigger": {"status": "Succeeded", "inputsLink": {"uri": SAS}},
+                                               "actions": {"HTTP": {"status": "Succeeded", "outputsLink": {"uri": SAS_OUT}},
+                                                           "Compose": {"status": "Succeeded"}}}}).encode()
+    if u == SAS:
+        return 200, b'{"body": {"id": "doc-1"}}'
+    if u == SAS_OUT:
+        return 200, b'{"statusCode": 200}'
+    return 404, b"{}"
+
+
+P.http = flow_api
+target = WORK / "zgloszenia/INC-1/przebiegi.jsonl"
+with contextlib.redirect_stdout(io.StringIO()):
+    P.cmd_runs([ENV, FLOW, "--out", str(target), "--od", "2026-10-15", "--wejscia", "trigger", "--wyjscia", "HTTP"])
+rows = [json.loads(l) for l in target.read_text(encoding="utf-8").splitlines()]
+expect("runs: filtr --od zatrzymuje na starszych", [r["name"] for r in rows], ["r3", "r2"])
+expect("runs: wejscia wyzwalacza", rows[0]["akcje"]["trigger"].get("wejscia"), {"body": {"id": "doc-1"}})
+expect("runs: wyjscia akcji", rows[0]["akcje"]["HTTP"].get("wyjscia"), {"statusCode": 200})
+expect("runs: bez tresci dla innych akcji", "wyjscia" in rows[0]["akcje"]["Compose"], False)
+with contextlib.redirect_stdout(io.StringIO()):
+    P.cmd_runs([ENV, FLOW, "--out", str(target)])
+expect("runs: bez --akcje tylko lista, z kolejna strona",
+       [(r["name"], "akcje" in r) for r in (json.loads(l) for l in target.read_text(encoding="utf-8").splitlines())],
+       [("r3", False), ("r2", False), ("r1", False)])
+bad_pages = {"next": f"{DV}/api/data/v9.2/accounts", "link": f"{DV}/api/data/v9.2/x"}
+
+
+def flow_api_bad(m, u, b=None, timeout=90, headers=None):
+    if u == f"{RB}?api-version=2016-11-01":
+        return 200, json.dumps({"value": [{"name": "r9", "properties": {"startTime": "2026-11-02T10:00:00Z"}}],
+                                "nextLink": bad_pages["next"]}).encode()
+    if u.startswith(f"{RB}/r9"):
+        return 200, json.dumps({"properties": {"actions": {"HTTP": {"outputsLink": {"uri": bad_pages["link"]}}}}}).encode()
+    calls.append(u)
+    return 200, b'{"value": []}'
+
+
+calls.clear()
+P.http = flow_api_bad
+target2 = WORK / "zgloszenia/INC-1/przebiegi2.jsonl"
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        P.cmd_runs([ENV, FLOW, "--out", str(target2), "--wyjscia", "HTTP"])
+        code = None
+    except SystemExit as e:
+        code = e.code
+expect("runs: nastepna strona na inny adres przerywa", code, 2)
+expect("runs: zadne zapytanie poza Flow API i SAS", calls, [])
+expect("runs: przerwany odczyt nie zostawia pliku wynikowego", target2.exists(), False)
+P.http = flow_api
+for label, cmd in [("runs bez --out", f"{Q} runs {ENV} {FLOW}"),
+                   ("runs --out poza zgloszeniem", f"{Q} runs {ENV} {FLOW} --out ../x.jsonl"),
+                   ("runs --out do wykonanie.jsonl", f"{Q} runs {ENV} {FLOW} --out zgloszenia/INC-1/wykonanie.jsonl")]:
+    expect(label, decision(cmd), "allow" if label == "runs bez --out" else "deny")
+r = ppcall("runs", ENV, FLOW)
+expect("runs bez --out: ppcall odmawia", r.returncode, 1)
+
+print("18. Weryfikacja po naprawie (ppcall verify)")
+VPLAN = PLAN.replace("INC-1", "VER-1").replace(
+    "Odczyt stanu flow zwraca Started, a najbliższy przebieg o 14:00 kończy się statusem Succeeded.",
+    "Odczyt stanu flow zwraca Started.\n```json\n"
+    '[{"opis": "Flow wlaczony", "url": "https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/'
+    'environments/env1/flows/abc?api-version=2016-11-01", "sciezka": ["properties", "state"], '
+    '"oczekiwane": "Started"}]\n```')
+vdir = WORK / "zgloszenia/VER-1"
+vdir.mkdir(parents=True, exist_ok=True)
+(vdir / "plan.md").write_text(VPLAN, encoding="utf-8")
+expect("verify: plan z odczytami przechodzi walidacje", C.check_plan(VPLAN)[0], [])
+expect("verify: odczyt z obcym hostem odrzucony",
+       bool(C.check_plan(VPLAN.replace("https://api.flow.microsoft.com/providers", "https://evil.example.com/p"))[0]), True)
+state = {"v": "Started"}
+P.http = lambda m, u, b=None, timeout=90, headers=None: (200, json.dumps({"properties": {"state": state["v"]}}).encode())
+
+
+def verify_code(incident="VER-1"):
+    with contextlib.redirect_stdout(io.StringIO()):
+        try:
+            P.cmd_verify([incident])
+        except SystemExit as e:
+            return e.code
+    return None
+
+
+expect("verify: plan bez akceptacji odrzucony", verify_code(), 3)
+(vdir / "wykonanie.jsonl").write_text(json.dumps({"krok": 1, "skrot_planu": C.plan_hash(VPLAN), "sukces": True}) + "\n",
+                                      encoding="utf-8")
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        P.cmd_verify(["VER-1"])
+        code = None
+    except SystemExit as e:
+        code = e.code
+expect("verify: zgodny stan", code, None)
+state["v"] = "Stopped"
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        P.cmd_verify(["VER-1"])
+        code = None
+    except SystemExit as e:
+        code = e.code
+expect("verify: niezgodny stan", code, 5)
+vlog = [json.loads(l) for l in (vdir / "weryfikacja.jsonl").read_text(encoding="utf-8").splitlines()]
+expect("verify: dziennik", [v["ok"] for v in vlog], [True, False])
+expect("verify: dozwolone bez akceptacji", decision(f"{Q} verify VER-1"), "allow")
+expect("verify: zapis do weryfikacja.jsonl zablokowany", decision(str(vdir / "weryfikacja.jsonl"), "Write"), "deny")
+(vdir / "plan.md").write_text(VPLAN.replace('"oczekiwane": "Started"', '"status": 200'), encoding="utf-8")
+expect("verify: zmienione odczyty po akceptacji odrzucone", verify_code(), 3)
+(vdir / "plan.md").write_text(VPLAN, encoding="utf-8")
+expect("verify: blok ``` json (zly zapis) odrzucony", bool(C.check_plan(VPLAN.replace("```json\n[", "``` JSON\n[", 1))[0]), True)
+expect("verify: zakomentowany blok nie jest wykonywany",
+       C.parse_checks(VPLAN.replace("```json\n[", "<!-- ```json\n[", 1).replace("]\n```", "]\n``` -->", 1)), ([], []))
+expect("verify: --out do weryfikacja.jsonl zablokowany",
+       decision(f'{Q} get "{DV}/api/data/v9.2/WhoAmI" --out zgloszenia/VER-1/weryfikacja.jsonl'), "deny")
 
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")

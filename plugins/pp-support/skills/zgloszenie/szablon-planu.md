@@ -37,13 +37,19 @@
 <!-- Jak cofnąć każdy krok. Jeśli krok jest nieodwracalny, napisz to wprost i wyjaśnij, czym to grozi. -->
 
 ## Weryfikacja po naprawie
-<!-- Jakim odczytem sprawdzimy, że naprawa zadziałała (konkretny URL lub polecenie i oczekiwany wynik). -->
+<!-- Jakim odczytem sprawdzimy, że naprawa zadziałała (konkretny URL lub polecenie i oczekiwany wynik).
+     Opcjonalnie blok ```json z odczytami dla `ppcall verify <ID>` (tylko GET, hosty z listy dozwolonych):
+     [{"opis": "Flow włączony", "url": "https://api.flow.microsoft.com/...?api-version=2016-11-01",
+       "sciezka": ["properties", "state"], "oczekiwane": "Started"}]
+     "sciezka" to klucze (albo numery pozycji list) w odpowiedzi; bez "oczekiwane" liczy się tylko HTTP 200. -->
 
 ## Kroki
 <!-- Tylko operacje zmieniające. Odczyty i weryfikacje nie są krokami.
      typ "http": metoda POST, PATCH albo PUT, url na dozwolonym hoście, opcjonalnie body.
      typ "cli": argv jako lista, program pac albo az.
-     typ "flow-patch": zmiana wartości tekstowych pod inputs/parameters albo inputs/body istniejących akcji jednego flow, najwyżej 5 zmian:
+     typ "flow-patch": zmiana wartości tekstowych pod inputs/parameters albo inputs/body istniejących akcji jednego flow,
+     całego inputs akcji Compose, inputs/variables/<n>/value w InitializeVariable albo inputs/value w SetVariable,
+     najwyżej 5 zmian:
        {"nr": 1, "opis": "...", "typ": "flow-patch",
         "srodowisko": "https://<nazwa>.crm4.dynamics.com", "workflowid": "<GUID>",
         "oczekiwany_modifiedon": "<modifiedon odczytany z workflows, np. 2026-08-25T09:52:49Z>",

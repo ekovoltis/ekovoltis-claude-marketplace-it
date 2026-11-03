@@ -184,7 +184,7 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash") -> tuple[str | N
                          "kazdej innej roznicy przywroci kopie.")
             return "ask", (f"ZMIANA W SRODOWISKU. Zgloszenie {args[1]}, krok {args[2]}: {step['opis']} | "
                            f"{C.step_summary(step)}.{extra} Zatwierdz tylko jesli to dokladnie zaakceptowany krok.")
-        if sub == "get":
+        if sub in ("get", "runs"):
             for target in out_targets(args):
                 problem = C.out_path_problem(cwd, target)
                 if problem:
@@ -192,7 +192,8 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash") -> tuple[str | N
                 decision, reason = guard_write(str(Path(cwd) / target), cwd)
                 if decision:
                     return decision, reason
-        if sub in {"get", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke", "config", ""}:
+        if sub in {"get", "runs", "verify", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke",
+                   "config", ""}:
             return "allow", "pp-support: operacja tylko do odczytu lub na lokalnych plikach zgloszenia"
         return "deny", f"Nieznana komenda ppcall: {sub}"
     if STATE_RE.search(s):
@@ -271,6 +272,9 @@ def guard_write(path: str, cwd: str | None = None) -> tuple[str | None, str]:
     if (re.search(r"/zgloszenia/[^/]+/wykonanie\.jsonl$", text)
             or (len(parts) == 2 and parts[1].rstrip(". ").lower() == "wykonanie.jsonl")):
         return "deny", "Dziennik wykonania prowadzi wylacznie ppcall."
+    if (re.search(r"/zgloszenia/[^/]+/weryfikacja\.jsonl$", text)
+            or (len(parts) == 2 and parts[1].rstrip(". ").lower() == C.VERIFY_LOG)):
+        return "deny", "Wyniki weryfikacji zapisuje wylacznie ppcall verify."
     if (re.search(r"/zgloszenia/[^/]+/backup(/|$)", text, re.I)
             or (len(parts) >= 2 and parts[1].rstrip(". ").lower() == C.BACKUP_DIR_NAME)):
         return "deny", "Kopie definicji flow w backup/ zapisuje wylacznie ppcall exec."

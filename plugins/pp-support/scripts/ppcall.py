@@ -1,6 +1,9 @@
 """ppcall: jedyna droga Claude'a do Azure, Power Platform, Dataverse, SharePoint i Fabric.
 
-Odczyt:      ppcall get <url> [--out plik] [--max-kb N]
+Odczyt:      ppcall get <url> [--out plik] [--max-kb N] [--all [--max-pages N]]
+Przebiegi:   ppcall runs <env-id> <flow> --out plik.jsonl [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--max N]
+                         [--akcje] [--wejscia A,B] [--wyjscia A,B]   (trigger = wyzwalacz)
+Weryfikacja: ppcall verify <ID>
 Dostepy:     ppcall dostepy
 Rejestr:     ppcall rejestr <fraza...>
 Plan:        ppcall plan-new <ID> | plan-check <ID> | status <ID>
@@ -17,6 +20,7 @@ import json
 import os
 import shutil
 import stat
+import re
 import subprocess
 import sys
 import urllib.error
@@ -132,10 +136,30 @@ def _short(payload: bytes, max_kb: int) -> str:
 
 # ---------------------------------------------------------------- komendy
 
+def get_all(url: str, max_pages: int) -> tuple[int, bytes]:
+    """Laczy strony wyniku (@odata.nextLink albo nextLink) w jedna liste value."""
+    host = urllib.parse.urlparse(url).hostname
+    items, pages, next_url = [], 0, url
+    while next_url and pages < max_pages:
+        if urllib.parse.urlparse(next_url).hostname != host:
+            raise RuntimeError("Nastepna strona wyniku wskazuje inny host, przerwano.")
+        status, payload = http("GET", next_url)
+        if status >= 400:
+            return status, payload
+        page = json.loads(payload)
+        if not isinstance(page, dict):
+            raise RuntimeError("Odpowiedz nie jest obiektem z lista value, --all nie ma czego laczyc.")
+        items.extend(page.get("value") or [])
+        pages += 1
+        next_url = page.get("@odata.nextLink") or page.get("nextLink")
+    result = {"value": items, "strony": pages, "niepelne": bool(next_url)}
+    return 200, json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+
 def cmd_get(args: list[str]) -> None:
     if not args:
-        fail("Uzycie: ppcall get <url> [--out plik] [--max-kb N]")
-    url, out_file, max_kb = args[0], None, 40
+        fail("Uzycie: ppcall get <url> [--out plik] [--max-kb N] [--all [--max-pages N]]")
+    url, out_file, max_kb, all_pages, max_pages = args[0], None, 40, False, 50
     rest = args[1:]
     while rest:
         flag = rest.pop(0)
@@ -143,6 +167,10 @@ def cmd_get(args: list[str]) -> None:
             out_file = rest.pop(0)
         elif flag == "--max-kb" and rest:
             max_kb = int(rest.pop(0))
+        elif flag == "--all":
+            all_pages = True
+        elif flag == "--max-pages" and rest:
+            max_pages = int(rest.pop(0))
         else:
             fail(f"Nieznany parametr {flag}")
     if out_file is not None:
@@ -151,10 +179,10 @@ def cmd_get(args: list[str]) -> None:
             C.audit({"typ": "odmowa-zapisu", "url": C.redact_url(url), "out": out_file, "powod": problem})
             fail(problem, 3)
     try:
-        status, payload = http("GET", url)
-    except RuntimeError as e:
+        status, payload = get_all(url, max_pages) if all_pages else http("GET", url)
+    except (RuntimeError, ValueError) as e:
         fail(str(e))
-    C.audit({"typ": "odczyt", "url": C.redact_url(url), "status": status})
+    C.audit({"typ": "odczyt", "url": C.redact_url(url), "status": status, "wszystkie_strony": all_pages})
     out(f"HTTP {status}")
     if out_file:
         Path(out_file).write_bytes(payload)
@@ -163,6 +191,120 @@ def cmd_get(args: list[str]) -> None:
         out(_short(payload, max_kb))
     if status >= 400:
         sys.exit(2)
+
+
+FLOW_API = "https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments"
+
+
+RUN_NAME_RE = re.compile(r"[A-Za-z0-9]{1,80}")
+
+
+def _run_content(link) -> object:
+    """Tresc z inputsLink/outputsLink. Tylko adres z podpisem SAS: taki nie dostaje tokenu."""
+    uri = (link or {}).get("uri") if isinstance(link, dict) else None
+    if not uri:
+        return None
+    if not C.is_run_content_url(uri):
+        return {"blad": "adres spoza tresci przebiegu, pominieto"}
+    try:
+        status, payload = http("GET", uri)
+    except RuntimeError as e:
+        return {"blad": str(e)}
+    if status != 200:
+        return {"blad": f"HTTP {status}"}
+    try:
+        return json.loads(payload)
+    except ValueError:
+        return payload.decode("utf-8", errors="replace")
+
+
+def _run_record(run: dict, detail: dict | None, inputs: set, outputs: set) -> dict:
+    props = (detail or run).get("properties", {})
+    rec = {"name": run.get("name"), "startTime": props.get("startTime"), "endTime": props.get("endTime"),
+           "status": props.get("status"), "error": props.get("error")}
+    if detail is None:
+        return rec
+    steps = {"trigger": props.get("trigger") or {}, **(props.get("actions") or {})}
+    rec["akcje"] = {}
+    for name, a in steps.items():
+        item = {"status": a.get("status"), "code": a.get("code"), "error": a.get("error")}
+        if name in inputs:
+            item["wejscia"] = _run_content(a.get("inputsLink"))
+        if name in outputs:
+            item["wyjscia"] = _run_content(a.get("outputsLink"))
+        rec["akcje"][name] = item
+    return rec
+
+
+def cmd_runs(args: list[str]) -> None:
+    usage = ("Uzycie: ppcall runs <env-id> <flow> --out plik.jsonl [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--max N] "
+             "[--akcje] [--wejscia A,B] [--wyjscia A,B]")
+    if len(args) < 2 or not C.GUID_RE.fullmatch(args[0]) or not C.GUID_RE.fullmatch(args[1]):
+        fail(usage)
+    env, flow, rest = args[0], args[1], args[2:]
+    out_file, since, until, limit, detail, inputs, outputs = None, "", "", 1000, False, set(), set()
+    while rest:
+        flag = rest.pop(0)
+        if flag == "--out" and rest:
+            out_file = rest.pop(0)
+        elif flag == "--od" and rest:
+            since = rest.pop(0)
+        elif flag == "--do" and rest:
+            until = rest.pop(0)
+        elif flag == "--max" and rest:
+            limit = int(rest.pop(0))
+        elif flag == "--akcje":
+            detail = True
+        elif flag in ("--wejscia", "--wyjscia") and rest:
+            names = {n.strip() for n in rest.pop(0).split(",") if n.strip()}
+            (inputs if flag == "--wejscia" else outputs).update(names)
+            detail = True
+        else:
+            fail(f"Nieznany parametr {flag}. {usage}")
+    if not out_file:
+        fail("ppcall runs wymaga --out (plik w katalogu zgloszenia).")
+    problem = C.out_path_problem(Path.cwd(), out_file)
+    if problem:
+        C.audit({"typ": "odmowa-zapisu", "out": out_file, "powod": problem})
+        fail(problem, 3)
+    base = f"{FLOW_API}/{env}/flows/{flow}/runs"
+    next_url, count = f"{base}?api-version=2016-11-01", 0
+    partial = Path(out_file + ".czesc")
+    try:
+        with open(partial, "w", encoding="utf-8") as f:
+            while next_url and count < limit:
+                status, payload = http("GET", next_url)
+                if status != 200:
+                    fail(f"Lista przebiegow: HTTP {status} {_short(payload, 1)[:300]}", 2)
+                page = json.loads(payload)
+                for run in page.get("value") or []:
+                    if not RUN_NAME_RE.fullmatch(str(run.get("name", ""))):
+                        continue
+                    start = (run.get("properties") or {}).get("startTime") or ""
+                    if until and start[:10] > until:
+                        continue
+                    if since and start[:10] < since:
+                        next_url = None  # przebiegi sa od najnowszego, dalej sa juz starsze
+                        break
+                    full = None
+                    if detail:
+                        s2, p2 = http("GET", f"{base}/{run['name']}?api-version=2016-11-01"
+                                             "&$expand=properties/actions,properties/trigger")
+                        full = json.loads(p2) if s2 == 200 else {"properties": {"blad_odczytu": s2}}
+                    f.write(json.dumps(_run_record(run, full, inputs, outputs), ensure_ascii=False) + "\n")
+                    count += 1
+                    if count >= limit:
+                        break
+                else:
+                    next_url = page.get("nextLink")
+                    if next_url and not next_url.startswith(base + "?"):
+                        fail("Nastepna strona przebiegow wskazuje inny adres, przerwano.", 2)
+    except (RuntimeError, ValueError) as e:
+        fail(str(e))
+    os.replace(partial, out_file)
+    C.audit({"typ": "odczyt-przebiegow", "srodowisko": env, "flow": flow, "przebiegi": count,
+             "wejscia": sorted(inputs), "wyjscia": sorted(outputs)})
+    out(f"Zapisano {count} przebiegow do {out_file}")
 
 
 def _count(payload: bytes) -> str:
@@ -520,6 +662,54 @@ def cmd_exec(args: list[str]) -> None:
     out(f"\nKrok {nr} wykonany. Zweryfikuj efekt odczytem zanim przejdziesz dalej.")
 
 
+def cmd_verify(args: list[str]) -> None:
+    if len(args) != 1:
+        fail("Uzycie: ppcall verify <ID>")
+    pp = C.plan_path(Path.cwd(), args[0])
+    if not pp.exists():
+        fail(f"Brak {pp}")
+    text = pp.read_text(encoding="utf-8")
+    current = C.plan_hash(text)
+    accepted = {(C.read_approval(args[0]) or {}).get("hash")}
+    log = C.incident_dir(Path.cwd(), args[0]) / "wykonanie.jsonl"
+    if log.exists():
+        for line in log.read_text(encoding="utf-8").splitlines():
+            try:
+                accepted.add(json.loads(line).get("skrot_planu"))
+            except ValueError:
+                pass
+    if current not in accepted:
+        fail("Weryfikacja dziala tylko dla planu, ktory zaakceptowal pracownik (skrot planu sie nie zgadza). "
+             "Zmiana odczytow weryfikacyjnych wymaga nowej akceptacji.", 3)
+    checks, errs = C.parse_checks(text)
+    if errs or not checks:
+        fail("Sekcja 'Weryfikacja po naprawie' nie ma poprawnego bloku ```json z odczytami: " + "; ".join(errs))
+    results = []
+    for chk in checks:
+        try:
+            status, payload = http("GET", chk["url"])
+            value = C.get_at(json.loads(payload), chk.get("sciezka") or []) if status == 200 else None
+            expected = chk.get("oczekiwane")
+            ok = status == chk.get("status", 200) and (
+                "oczekiwane" not in chk or (type(value) is type(expected) and value == expected))
+            res = {"opis": chk["opis"], "status": status, "wartosc": value, "ok": ok}
+        except (RuntimeError, KeyError, ValueError) as e:
+            res = {"opis": chk["opis"], "ok": False, "blad": str(e)}
+        results.append(res)
+        mark = "OK " if res["ok"] else "NIE"
+        out(f"  {mark} {chk['opis']}: " + (res.get("blad") or f"HTTP {res['status']}, wartosc {res['wartosc']!r}"
+                                         + ("" if res["ok"] else f", oczekiwano {chk.get('oczekiwane')!r}")))
+    entry = {"czas": C.now().isoformat(), "uzytkownik": C.who(), "skrot_planu": current, "wyniki": results,
+             "ok": all(r["ok"] for r in results)}
+    with open(C.incident_dir(Path.cwd(), args[0]) / C.VERIFY_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    C.audit({"typ": "weryfikacja", "id": args[0], "ok": entry["ok"]})
+    if not entry["ok"]:
+        out("\nWeryfikacja NIE przeszla. Wroc do diagnozy z pracownikiem.")
+        sys.exit(5)
+    out("\nWeryfikacja przeszla.")
+
+
 def cmd_revoke(args: list[str]) -> None:
     if len(args) != 1:
         fail("Uzycie: ppcall revoke <ID>")
@@ -535,7 +725,7 @@ def cmd_config(_args: list[str]) -> None:
 COMMANDS = {
     "get": cmd_get, "dostepy": cmd_dostepy, "rejestr": cmd_rejestr,
     "plan-new": cmd_plan_new, "plan-check": cmd_plan_check, "status": cmd_status,
-    "exec": cmd_exec, "revoke": cmd_revoke, "config": cmd_config,
+    "exec": cmd_exec, "revoke": cmd_revoke, "config": cmd_config, "runs": cmd_runs, "verify": cmd_verify,
 }
 
 if __name__ == "__main__":
