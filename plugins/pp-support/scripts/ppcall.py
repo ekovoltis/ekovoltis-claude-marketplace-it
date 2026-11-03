@@ -12,12 +12,17 @@ Tokeny sa pobierane wewnatrz procesu i nigdy nie sa wypisywane.
 """
 from __future__ import annotations
 
+import copy
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
+from http.client import InvalidURL
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,8 +32,23 @@ TEMPLATE = Path(__file__).resolve().parent.parent / "skills" / "zgloszenie" / "s
 REGISTRY = Path(__file__).resolve().parent.parent / "rejestr" / "automatyzacje-snapshot.json"
 
 
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+
 def out(msg: str = "") -> None:
-    print(msg, flush=True)
+    try:
+        print(msg, flush=True)
+    except OSError:
+        # Konsola Windows potrafi odrzucic zapis (Errno 22); plik --out jest juz wtedy zapisany.
+        try:
+            sys.stdout.buffer.write((msg + "\n").encode("utf-8", errors="replace"))
+            sys.stdout.buffer.flush()
+        except OSError:
+            pass
 
 
 def fail(msg: str, code: int = 1) -> None:
@@ -58,25 +78,44 @@ def get_token(resource: str) -> str:
     return r.stdout.strip()
 
 
-def http(method: str, url: str, body=None, timeout: int = 90) -> tuple[int, bytes]:
-    resource = C.resource_for_url(url)
-    if not resource:
-        raise RuntimeError(f"Host spoza listy dozwolonych, token nie zostanie wyslany: {url}")
-    token = get_token(resource)
-    data = None
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",
-               "OData-MaxVersion": "4.0", "OData-Version": "4.0"}
-    if "sharepoint.com" in url and "/_api/" in url:
-        headers["Accept"] = "application/json;odata=nometadata"
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+def encode_url(url: str) -> str:
+    """Spacje i polskie znaki w adresie (np. w $filter) koduje procentowo, reszte zostawia."""
+    return urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
+
+
+def http(method: str, url: str, body=None, timeout: int = 90, headers: dict | None = None) -> tuple[int, bytes]:
+    url = encode_url(url)
+    send = {"Accept": "application/json"}
     try:
+        run_content = C.is_run_content_url(url)
+        C.resource_for_url(url)
+    except ValueError as e:
+        raise RuntimeError(f"Niepoprawny adres URL ({e})")
+    if run_content:
+        # Podpis SAS jest w adresie: token nie jest potrzebny i nie moze tam trafic.
+        if method != "GET":
+            raise RuntimeError("Tresc przebiegu flow mozna tylko odczytac (GET).")
+    else:
+        resource = C.resource_for_url(url)
+        if not resource:
+            raise RuntimeError(f"Host spoza listy dozwolonych, token nie zostanie wyslany: {url}")
+        send.update({"Authorization": f"Bearer {get_token(resource)}",
+                     "OData-MaxVersion": "4.0", "OData-Version": "4.0"})
+        if "sharepoint.com" in url and "/_api/" in url:
+            send["Accept"] = "application/json;odata=nometadata"
+    data = None
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        send["Content-Type"] = "application/json; charset=utf-8"
+    send.update(headers or {})
+    try:
+        req = urllib.request.Request(url, data=data, method=method, headers=send)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+    except (ValueError, InvalidURL) as e:
+        raise RuntimeError(f"Niepoprawny adres URL ({e}): {C.redact_url(url)}")
 
 
 def _short(payload: bytes, max_kb: int) -> str:
@@ -109,13 +148,13 @@ def cmd_get(args: list[str]) -> None:
     if out_file is not None:
         problem = C.out_path_problem(Path.cwd(), out_file)
         if problem:
-            C.audit({"typ": "odmowa-zapisu", "url": url, "out": out_file, "powod": problem})
+            C.audit({"typ": "odmowa-zapisu", "url": C.redact_url(url), "out": out_file, "powod": problem})
             fail(problem, 3)
     try:
         status, payload = http("GET", url)
     except RuntimeError as e:
         fail(str(e))
-    C.audit({"typ": "odczyt", "url": url, "status": status})
+    C.audit({"typ": "odczyt", "url": C.redact_url(url), "status": status})
     out(f"HTTP {status}")
     if out_file:
         Path(out_file).write_bytes(payload)
@@ -279,6 +318,43 @@ def cmd_plan_new(args: list[str]) -> None:
     out(f"Utworzono {d}")
 
 
+def workflow_url(step: dict) -> str:
+    return f"{str(step['srodowisko']).rstrip('/')}/api/data/v9.2/workflows({step['workflowid']})"
+
+
+def read_workflow(step: dict) -> dict:
+    url = workflow_url(step) + "?$select=name,clientdata,modifiedon,statecode,statuscode,ismanaged,category"
+    status, payload = http("GET", url)
+    if status != 200:
+        raise RuntimeError(f"Odczyt flow {step['workflowid']}: HTTP {status} {_short(payload, 1)[:300]}")
+    return json.loads(payload)
+
+
+def reverse_step(step: dict) -> dict:
+    return {"nr": 1, "opis": "Wycofanie: " + str(step.get("opis", "")), "typ": "flow-patch",
+            "srodowisko": step["srodowisko"], "workflowid": step["workflowid"],
+            "oczekiwany_modifiedon": "<modifiedon_po z wykonanie.jsonl>",
+            "zmiany": [{"sciezka": c["sciezka"], "bylo": c["ma_byc"], "ma_byc": c["bylo"]}
+                       for c in step["zmiany"]]}
+
+
+def flow_patch_preview(step: dict) -> list[str]:
+    """Sprawdza krok na aktualnej definicji i wypisuje roznice. Zwraca bledy."""
+    try:
+        workflow = read_workflow(step)
+    except RuntimeError as e:
+        return [str(e)]
+    errs, _ = C.flow_patch_live_problems(step, workflow)
+    out(f"  Flow: {workflow.get('name')} (modifiedon {workflow.get('modifiedon')}, statecode {workflow.get('statecode')})")
+    for ch in step["zmiany"]:
+        out(f"  - {C.flow_patch_label(ch['sciezka'])}\n      sciezka: {' / '.join(ch['sciezka'])}"
+            f"\n      bylo:    {ch['bylo']}\n      ma byc:  {ch['ma_byc']}")
+    if not errs:
+        out("  Krok wycofania (nowy plan z nowa akceptacja, gdy bedzie potrzebny):")
+        out("  " + json.dumps(reverse_step(step), ensure_ascii=False))
+    return errs
+
+
 def cmd_plan_check(args: list[str]) -> None:
     if len(args) != 1:
         fail("Uzycie: ppcall plan-check <ID>")
@@ -293,9 +369,17 @@ def cmd_plan_check(args: list[str]) -> None:
             out(f"  - {e}")
         sys.exit(2)
     h = C.plan_hash(text)
-    out(f"Plan poprawny. Skrot planu: {h}")
+    live_errs = []
     for s in steps:
         out(f"  Krok {s['nr']}: {s['opis']}\n          {C.step_summary(s)}")
+        if s["typ"] == "flow-patch":
+            live_errs.extend(f"krok {s['nr']}: {e}" for e in flow_patch_preview(s))
+    if live_errs:
+        out("Plan NIE jest gotowy do akceptacji, aktualna definicja flow nie zgadza sie z planem:")
+        for e in live_errs:
+            out(f"  - {e}")
+        sys.exit(2)
+    out(f"Plan poprawny. Skrot planu: {h}")
     out("\nAkceptacje wpisuje pracownik, wlasnymi slowami, w oknie rozmowy:")
     out(f"  AKCEPTUJĘ {args[0]} {h}\n  Przyczyna: <jak rozumiesz przyczyne>\n  Naprawa: <co dokladnie zostanie zrobione>")
 
@@ -319,6 +403,76 @@ def cmd_status(args: list[str]) -> None:
         out(f"ZATRZYMANO na kroku {appr['zatrzymano']}")
 
 
+def log_entry(incident_id: str, entry: dict) -> None:
+    with open(C.incident_dir(Path.cwd(), incident_id) / "wykonanie.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def restore_definition(step: dict, before: dict, definition: dict) -> bool:
+    """Przywraca definicje sprzed zapisu i sprawdza wynik. Nie rzuca wyjatku."""
+    try:
+        try:
+            etag = read_workflow(step)["@odata.etag"]
+        except Exception:  # noqa: BLE001
+            etag = "*"
+        status, _ = http("PATCH", workflow_url(step), {"clientdata": before["clientdata"]}, headers={"If-Match": etag})
+        return status < 300 and not C.leaf_diff(definition, json.loads(read_workflow(step)["clientdata"]))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def exec_flow_patch(incident_id: str, step: dict, entry: dict) -> bool:
+    """Zapis definicji flow z kopia, If-Match i porownaniem po zapisie. Zwraca sukces."""
+    before = read_workflow(step)
+    errs, definition = C.flow_patch_live_problems(step, before)
+    if errs:
+        entry["odmowa"] = errs
+        out("Flow nie zgadza sie z zaakceptowanym planem, nic nie zapisano:\n  - " + "\n  - ".join(errs))
+        return False
+    backup_dir = C.incident_dir(Path.cwd(), incident_id) / C.BACKUP_DIR_NAME
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / f"{step['workflowid']}-{C.now().strftime('%Y%m%dT%H%M%SZ')}.json"
+    backup.write_text(before["clientdata"], encoding="utf-8")
+    os.chmod(backup, stat.S_IREAD)
+    entry.update({"kopia": str(backup), "modifiedon_przed": before.get("modifiedon"),
+                  "zmiany": step["zmiany"]})
+    changed = copy.deepcopy(definition)
+    for ch in step["zmiany"]:
+        C.set_at(changed, ch["sciezka"], ch["ma_byc"])
+    log_entry(incident_id, {**entry, "etap": "zapis-rozpoczety"})
+    status, payload = http("PATCH", workflow_url(step), {"clientdata": json.dumps(changed, ensure_ascii=False)},
+                           headers={"If-Match": before["@odata.etag"]})
+    entry["status"] = status
+    if not 200 <= status < 300:
+        entry["odpowiedz"] = _short(payload, 4)
+        out(f"Zapis odrzucony: HTTP {status}\n{_short(payload, 4)}")
+        return False
+    declared = {tuple(ch["sciezka"]) for ch in step["zmiany"]}
+    try:
+        after = read_workflow(step)
+        written = json.loads(after["clientdata"])
+        diff = set(C.leaf_diff(definition, written))
+        entry["modifiedon_po"] = after.get("modifiedon")
+        ok = diff == declared and all(C.get_at(written, ch["sciezka"]) == ch["ma_byc"] for ch in step["zmiany"])
+        entry["nieoczekiwane_roznice"] = [" / ".join(d) for d in sorted(diff - declared)][:50]
+    except Exception as e:  # noqa: BLE001
+        ok = False
+        entry["wyjatek_weryfikacji"] = str(e)
+    if not ok:
+        entry["przywrocono"] = restore_definition(step, before, definition)
+        out("Definicja po zapisie nie zgadza sie z planem albo nie dala sie sprawdzic"
+            + (". Przywrocono kopie." if entry["przywrocono"] else f". PRZYWROCENIE NIEUDANE, kopia: {backup}"))
+        return False
+    # Zmiana stanu nie jest zmiana definicji: definicja zostaje, plan sie zatrzymuje, decyzje podejmuje czlowiek.
+    if (after.get("statecode"), after.get("statuscode")) != (before.get("statecode"), before.get("statuscode")):
+        entry["stan_flow"] = [before.get("statecode"), after.get("statecode")]
+        out(f"Definicja zapisana, ale stan flow zmienil sie z {before.get('statecode')} na {after.get('statecode')}.")
+        return False
+    out(f"Zapisano {len(declared)} zmian(y) w {after.get('name')}. Porownanie po zapisie: tylko zadeklarowane sciezki. "
+        f"Kopia: {backup}")
+    return True
+
+
 def cmd_exec(args: list[str]) -> None:
     if len(args) != 2 or not args[1].isdigit():
         fail("Uzycie: ppcall exec <ID> <nr-kroku>")
@@ -328,7 +482,6 @@ def cmd_exec(args: list[str]) -> None:
         C.audit({"typ": "odmowa-wykonania", "id": incident_id, "krok": nr, "powod": reason})
         fail(reason, 3)
     appr = C.read_approval(incident_id)
-    log = C.incident_dir(Path.cwd(), incident_id) / "wykonanie.jsonl"
     entry = {"czas": C.now().isoformat(), "uzytkownik": C.who(), "krok": nr, "opis": step["opis"],
              "operacja": C.step_summary(step), "skrot_planu": appr["hash"]}
     success = False
@@ -338,6 +491,8 @@ def cmd_exec(args: list[str]) -> None:
             entry.update({"status": status, "odpowiedz": _short(payload, 4)})
             success = 200 <= status < 300
             out(f"HTTP {status}\n{_short(payload, 20)}")
+        elif step["typ"] == "flow-patch":
+            success = exec_flow_patch(incident_id, step, entry)
         else:
             exe = shutil.which(step["argv"][0])
             if not exe:
@@ -352,8 +507,7 @@ def cmd_exec(args: list[str]) -> None:
         entry["wyjatek"] = str(e)
         out(f"Wyjatek: {e}")
     entry["sukces"] = success
-    with open(log, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    log_entry(incident_id, entry)
     if success:
         appr.setdefault("wykonane", []).append(nr)
     else:

@@ -176,14 +176,20 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash") -> tuple[str | N
             ok, reason, step = C.can_execute(cwd, args[1], int(args[2]))
             if not ok:
                 return "deny", reason
+            extra = ""
+            if step.get("typ") == "flow-patch":
+                values = " | ".join(f"{C.flow_patch_label(c['sciezka'])}: bylo {c['bylo'][:160]!r}, "
+                                    f"ma byc {c['ma_byc'][:160]!r}" for c in step["zmiany"])
+                extra = (f" Wartosci: {values}. ppcall zapisze kopie, a po zapisie porowna definicje i przy "
+                         "kazdej innej roznicy przywroci kopie.")
             return "ask", (f"ZMIANA W SRODOWISKU. Zgloszenie {args[1]}, krok {args[2]}: {step['opis']} | "
-                           f"{C.step_summary(step)}. Zatwierdz tylko jesli to dokladnie zaakceptowany krok.")
+                           f"{C.step_summary(step)}.{extra} Zatwierdz tylko jesli to dokladnie zaakceptowany krok.")
         if sub == "get":
             for target in out_targets(args):
                 problem = C.out_path_problem(cwd, target)
                 if problem:
                     return "deny", problem
-                decision, reason = guard_write(str(Path(cwd) / target))
+                decision, reason = guard_write(str(Path(cwd) / target), cwd)
                 if decision:
                     return decision, reason
         if sub in {"get", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke", "config", ""}:
@@ -240,7 +246,7 @@ def guard_command(cmd: str, cwd: str, dialect: str = "bash") -> tuple[str | None
     return worst
 
 
-def guard_write(path: str) -> tuple[str | None, str]:
+def guard_write(path: str, cwd: str | None = None) -> tuple[str | None, str]:
     p = Path(path).expanduser()
     try:
         p = p.resolve()
@@ -257,8 +263,17 @@ def guard_write(path: str) -> tuple[str | None, str]:
         pass
     if re.search(r"/\.claude/settings(\.local)?\.json$", text):
         return "deny", "Zmiana ustawien Claude Code w trakcie obslugi zgloszenia jest zablokowana."
-    if re.search(r"/zgloszenia/[^/]+/wykonanie\.jsonl$", text):
+    parts: tuple = ()
+    try:
+        parts = p.relative_to(C.incidents_root(cwd or os.getcwd()).expanduser().resolve()).parts
+    except (ValueError, OSError):
+        pass
+    if (re.search(r"/zgloszenia/[^/]+/wykonanie\.jsonl$", text)
+            or (len(parts) == 2 and parts[1].rstrip(". ").lower() == "wykonanie.jsonl")):
         return "deny", "Dziennik wykonania prowadzi wylacznie ppcall."
+    if (re.search(r"/zgloszenia/[^/]+/backup(/|$)", text, re.I)
+            or (len(parts) >= 2 and parts[1].rstrip(". ").lower() == C.BACKUP_DIR_NAME)):
+        return "deny", "Kopie definicji flow w backup/ zapisuje wylacznie ppcall exec."
     return None, ""
 
 
@@ -278,7 +293,7 @@ def main() -> None:
             dialect = "powershell" if tool == "PowerShell" else "bash"
             decision, reason = guard_command(str(tin.get("command", "")), cwd, dialect)
         elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
-            decision, reason = guard_write(str(tin.get("file_path") or tin.get("notebook_path") or ""))
+            decision, reason = guard_write(str(tin.get("file_path") or tin.get("notebook_path") or ""), cwd)
         elif tool.startswith("mcp__") and MCP_SCOPE_RE.search(tool):
             action = tool.split("__")[-1]
             if MCP_WRITE_RE.search(action):

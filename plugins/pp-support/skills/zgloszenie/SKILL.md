@@ -113,7 +113,16 @@ Poza zasięgiem pluginu, zawsze robi to człowiek, a Ty przygotowujesz instrukcj
 - usuwanie czegokolwiek (rekordów, flow, plików, rozwiązań, uruchomień),
 - ponowne uwierzytelnienie połączeń i zmiana właściciela flow,
 - odczyt i zmiana sekretów, uprawnień, ról i ustawień środowisk,
-- zmiany logiki flow, aplikacji i pipeline'ów na produkcji. Takie zmiany idą ścieżką deweloperską zgodnie ze standardem SWO, a Ty możesz pomóc przygotować ich opis dla developera.
+- zmiany logiki flow, aplikacji i pipeline'ów na produkcji: dodawanie i usuwanie akcji, zmiany warunków, kolejności, wyzwalaczy i połączeń. Takie zmiany idą ścieżką deweloperską zgodnie ze standardem SWO, a Ty możesz pomóc przygotować ich opis dla developera.
+
+Wyjątek: drobną zmianę wartości w istniejącej akcji flow (np. jedno wyrażenie w polu szablonu) można wykonać krokiem `flow-patch`, wyłącznie gdy:
+
+- przyczyna jest potwierdzona jako **FAKT**,
+- plan ma sekcję „Analiza wpływu”: które przypadki zmienią wynik, a które nie, z liczbami z danych,
+- plan ma sekcję „Test”: wynik testu na kopii flow w środowisku testowym albo uzasadnienie, dlaczego test nie jest możliwy,
+- środowisko jest na liście `flow_patch_dataverse_urls` w ustawieniach pluginu.
+
+Format kroku jest w szablonie planu. Wartości `bylo` i `oczekiwany_modifiedon` przepisz z odczytu `workflows(<id>)?$select=clientdata,modifiedon`, nie z pamięci. `plan-check` sprawdzi je na aktualnej definicji i wypisze różnice oraz krok wycofania. Pokaż je pracownikowi. Przed zapisem `exec` zrobi kopię definicji w `zgloszenia/<ID>/backup/`, a po zapisie porówna definicję i przy każdej innej różnicy przywróci kopię. Wycofanie zmiany to nowy plan z krokiem odwrotnym i nową akceptacją.
 
 Typowe kroki, które mieszczą się w planie: ponowienie nieudanego przebiegu, wyłączenie lub włączenie flow, anulowanie zawieszonego przebiegu, korekta konkretnych rekordów danych w Dataverse, ponowne uruchomienie zadania pipeline'u w Fabric. Każdy z nich wymaga uzasadnienia w diagnozie.
 
