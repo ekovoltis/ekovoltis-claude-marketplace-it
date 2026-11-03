@@ -1,4 +1,4 @@
-# pp-support 1.0.0
+# pp-support 1.1.0
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -55,6 +55,19 @@ pp-support/
 | w planie: DELETE, argumenty delete/remove/purge/secret, zmiana definicji flow poza krokiem `flow-patch`, hosty spoza listy | usuwanie i przebudowę logiki robi człowiek, logika przez ścieżkę deweloperską (SWO) |
 
 Dozwolone hosty dla tokenów: Graph, ARM, Power Automate, BAP, Power Platform API, Fabric, środowiska Dataverse (`*.crm*.dynamics.com`), SharePoint (`*.sharepoint.com`). Na inne adresy `ppcall` nie wyśle tokenu. Wyjątek bez tokenu: treść wejść i wyjść akcji z historii przebiegu (`inputsLink`/`outputsLink` na `*.environment.api.powerplatformusercontent.com`), którą `ppcall get` pobiera tylko metodą GET, bo podpis SAS jest w adresie. Do dziennika audytu adres trafia bez podpisu.
+
+## Kiedy plugin działa
+
+Plugin jest włączony na stałe, ale strażnik pilnuje tylko rozmów dyżurnych. W innych rozmowach (np. praca nad kodem w innym projekcie) nie blokuje `curl`, `az`, zapisu ustawień ani przeglądarki. Rozmowa staje się dyżurna i zostaje taka do końca, gdy:
+
+- uruchomisz skill pluginu (`pp-support:...`),
+- Claude pierwszy raz użyje `ppcall`,
+- rozmowa jest otwarta w folderze z ustawienia `support_dirs`,
+- napiszesz akceptację albo odwołanie w ich formacie (`AKCEPTUJĘ <ID> ...`, `ODWOŁUJĘ <ID>`) albo zaczniesz wiadomość od słowa „dyżur”.
+
+Wyjście z folderu dyżurnego w trakcie rozmowy nie wyłącza pilnowania. Znaczniki rozmów są usuwane po 30 dniach bez użycia. Hook strażnika uruchamia się też przy każdym odczycie pliku, ale poza kopiami w `backup/` kończy od razu.
+
+Zawsze, także poza rozmową dyżurną, działają: akceptacja i wykonanie (`ppcall exec` sprawdza akceptację sam), ochrona stanu akceptacji, dziennika wykonania, wyników weryfikacji i kopii definicji. Bez identyfikatora rozmowy strażnik pilnuje zawsze.
 
 ## Salesbook
 

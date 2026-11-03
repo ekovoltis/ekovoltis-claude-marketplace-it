@@ -16,7 +16,7 @@ def main() -> None:
     try:
         data = json.load(sys.stdin)
         cmd = str((data.get("tool_input") or {}).get("command", ""))
-        if RELEVANT.search(cmd + " "):
+        if RELEVANT.search(cmd + " ") and C.session_active(data.get("session_id"), data.get("cwd") or "."):
             resp = data.get("tool_response")
             C.audit({"typ": "polecenie", "narzedzie": data.get("tool_name"), "sesja": data.get("session_id"),
                      "cwd": data.get("cwd"), "polecenie": cmd[:1000],

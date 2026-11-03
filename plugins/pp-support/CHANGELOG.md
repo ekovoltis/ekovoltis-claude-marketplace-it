@@ -1,5 +1,11 @@
 # Zmiany w pp-support
 
+## 1.1.0 (2026-11-03)
+
+- Strażnik pilnuje tylko rozmów dyżurnych. Rozmowa staje się dyżurna przy skillu pluginu, pierwszym `ppcall`, w folderze z nowego ustawienia `support_dirs` albo po wiadomości z akceptacją lub odwołaniem w ich formacie albo zaczynającej się od słowa „dyżur”. Wyjście z folderu dyżurnego nie wyłącza pilnowania; nieczytelna konfiguracja albo błąd odczytu stanu oznacza pilnowanie. W innych rozmowach plugin nie blokuje pracy. Akceptacja, `ppcall exec` i ochrona stanu, dzienników i kopii działają zawsze.
+- Poprawka 1.0.0: hook strażnika nie był podpięty pod `Read`, więc blokada odczytu kopii w `backup/` nie działała. `hooks.json` obejmuje teraz `Read` i `Skill`, a test sprawdza pokrycie narzędzi.
+- Ochrona stanu akceptacji także po rzeczywistej ścieżce katalogu stanu, nie tylko po nazwie.
+
 ## 1.0.0 (2026-11-03)
 
 - Salesbook: `ppcall get` czyta z API (tylko GET) z danymi logowania pobieranymi z akcji HTTP flow integracji (`salesbook_auth_flow`, decyzja Michała z 2026-11-03), wysyłanymi tylko pod `salesbook_api_url`, bez przekierowań; pliki dokumentów bez danych logowania. Strażnik blokuje `curl` do Salesbooka.

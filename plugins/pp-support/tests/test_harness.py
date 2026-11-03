@@ -1074,6 +1074,96 @@ expect("token Microsoft nie idzie za przekierowaniem",
        ("Authorization" in captured.get("unredirected", {}), "Authorization" in captured.get("redirected", {})),
        (True, False))
 
+print("24. Plugin uspiony poza praca dyzurna (aktywacja w rozmowie)")
+OTHER = TMP / "inny-projekt"
+OTHER.mkdir(exist_ok=True)
+
+
+def guard_in(session, tool, tin, cwd=OTHER):
+    r = hook("hook_guard", {"tool_name": tool, "tool_input": tin, "cwd": str(cwd), "session_id": session})
+    return r["hookSpecificOutput"]["permissionDecision"] if r else None
+
+
+S1 = "sesja-elm-1"
+expect("uspiony: curl do Dataverse", guard_in(S1, "Bash", {"command": f"curl {DV}/api/data/v9.2/x"}), None)
+expect("uspiony: zapis ustawien Claude Code",
+       guard_in(S1, "Write", {"file_path": str(OTHER / ".claude/settings.json")}), None)
+expect("uspiony: klikniecie w przegladarce",
+       guard_in(S1, "mcp__Claude_Browser__computer", {"action": "left_click"}), None)
+expect("uspiony: stan akceptacji nadal chroniony",
+       guard_in(S1, "Write", {"file_path": str(TMP / "state/akceptacje/X.json")}), "deny")
+expect("uspiony: dziennik wykonania nadal chroniony",
+       guard_in(S1, "Write", {"file_path": str(WORK / "zgloszenia/INC-1/wykonanie.jsonl")}, WORK), "deny")
+expect("uspiony: kopia definicji nadal nieczytelna",
+       guard_in(S1, "Read", {"file_path": str(WORK / "zgloszenia/FP-1/backup/x.json")}, WORK), "deny")
+expect("uspiony: rozmowa nadal nieaktywna", C.session_active(S1, OTHER), False)
+
+expect("ppcall aktywuje rozmowe i wymaga akceptacji",
+       guard_in(S1, "Bash", {"command": f"{Q} exec INC-404 1"}), "deny")
+expect("po ppcall: curl zablokowany", guard_in(S1, "Bash", {"command": f"curl {DV}/api/data/v9.2/x"}), "deny")
+expect("po ppcall: przegladarka pyta", guard_in(S1, "mcp__Claude_Browser__computer", {"action": "left_click"}), "ask")
+
+S2 = "sesja-skill-2"
+expect("skill pp-support aktywuje", guard_in(S2, "Skill", {"skill": "pp-support:zgloszenie"}), None)
+expect("po skillu: curl zablokowany", guard_in(S2, "Bash", {"command": f"curl {DV}/x"}), "deny")
+S2b = "sesja-inny-skill"
+guard_in(S2b, "Skill", {"skill": "ekovoltis:raport-pdf"})
+expect("inny skill nie aktywuje", C.session_active(S2b, OTHER), False)
+
+S3 = "sesja-prompt-3"
+hook("hook_prompt", {"prompt": "Dyżur: sprawdź automat 007", "cwd": str(OTHER), "session_id": S3})
+expect("wiadomosc od slowa 'dyzur' aktywuje", C.session_active(S3, OTHER), True)
+for i, text in enumerate(["akceptuję tę zmianę w ELM", "Mam dyżur w piątek, przesuń spotkanie"]):
+    hook("hook_prompt", {"prompt": text, "cwd": str(OTHER), "session_id": f"sesja-proza-{i}"})
+    expect(f"zwykle zdanie nie aktywuje: {text}", C.session_active(f"sesja-proza-{i}", OTHER), False)
+S3b = "sesja-prompt-3b"
+hook("hook_prompt", {"prompt": "Dodaj filtr do tabeli w ELM", "cwd": str(OTHER), "session_id": S3b})
+expect("zwykla wiadomosc nie aktywuje", C.session_active(S3b, OTHER), False)
+
+cfg = C.load_config()
+cfg["support_dirs"] = [str(TMP / "dyzur")]
+C.save_config(cfg)
+(TMP / "dyzur" / "sub").mkdir(parents=True, exist_ok=True)
+expect("folder dyzurny: aktywna od startu", guard_in("sesja-4", "Bash", {"command": f"curl {DV}/x"}, TMP / "dyzur" / "sub"), "deny")
+expect("folder dyzurny: po cd poza folder nadal aktywna", guard_in("sesja-4", "Bash", {"command": f"curl {DV}/x"}, OTHER), "deny")
+cfg["support_dirs"] = []
+C.save_config(cfg)
+expect("brak identyfikatora rozmowy: pilnuje (fail closed)", guard_in(None, "Bash", {"command": f"curl {DV}/x"}), "deny")
+expect("zly identyfikator rozmowy: pilnuje", guard_in("../../x", "Bash", {"command": f"curl {DV}/x"}), "deny")
+expect("znacznik aktywacji chroniony", guard_in("sesja-5", "Bash", {"command": f"rm {TMP}/state/sesje/{S1}.json"}), "deny")
+for label, cmd in [("wzorzec nazwy", "rm ~/.claude/pp-support-st*/sesje/*"),
+                   ("sklejanie nazwy", "cd ~/.claude && rm pp-support-sta''te/sesje/*"),
+                   ("znak zapytania", "echo {} > ~/.claude/pp-supp?rt-state/akceptacje/A.json")]:
+    expect(f"stan: obejscie przez {label}", guard_in("sesja-5", "Bash", {"command": cmd}), "deny")
+expect("stan: PowerShell sklejanie", guard_in("sesja-5", "PowerShell", {"command":
+       'Remove-Item (Join-Path $HOME ".claude\pp-support-" + "state\sesje\*")'}), "deny")
+expect("uspiony: zwykle polecenie z .claude", guard_in("sesja-5", "Bash", {"command": "ls .claude/skills/*"}), None)
+expect("uspiony: aktualizacja pluginu", guard_in("sesja-5", "Bash",
+       {"command": "claude plugin update pp-support@ekovoltis-it --scope user"}), None)
+guard_in("sesja-7", "Bash", {"command": "bash scripts/ppcall&&ls"})
+expect("ppcall&& aktywuje", C.session_active("sesja-7", OTHER), True)
+cfg_file = TMP / "state/config.json"
+saved = cfg_file.read_text(encoding="utf-8")
+cfg_file.write_text("{niepelny", encoding="utf-8")
+expect("nieczytelna konfiguracja: pilnuje", guard_in("sesja-8", "Bash", {"command": f"curl {DV}/x"}), "deny")
+cfg_file.write_text(saved, encoding="utf-8")
+
+r = subprocess.run([BASH, str(SCRIPTS / "run-py"), "hook_session_start"], capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", env=os.environ, timeout=120,
+                   input=json.dumps({"session_id": "sesja-6", "cwd": str(OTHER)}))
+expect("SessionStart: uspiony plugin nic nie dopisuje", r.stdout.strip(), "")
+r = subprocess.run([BASH, str(SCRIPTS / "run-py"), "hook_session_start"], capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", env=os.environ, timeout=120, input="")
+expect("SessionStart bez danych: pelny komunikat", "Tryb pracy" in r.stdout, True)
+
+print("25. hooks.json obejmuje wszystkie narzedzia, ktore pilnuje straznik")
+import re as _re  # noqa: E402
+hooks_cfg = json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))
+matcher = _re.compile("^(" + hooks_cfg["hooks"]["PreToolUse"][0]["matcher"] + ")$")
+for tool in ["Bash", "PowerShell", "Write", "Edit", "MultiEdit", "NotebookEdit", "Read", "Skill",
+             "mcp__claude-in-chrome__computer", "mcp__Claude_Browser__navigate", "mcp__dataverse__update_record"]:
+    expect(f"hooks.json: {tool}", bool(matcher.match(tool)), True)
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

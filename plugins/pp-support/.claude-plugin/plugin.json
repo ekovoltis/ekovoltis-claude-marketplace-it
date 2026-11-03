@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "pp-support",
   "displayName": "Wsparcie automatyzacji Power Platform",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Wsparcie dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform: diagnoza odczytem, plan naprawy, wykonanie wyłącznie po jawnej akceptacji pracownika.",
   "author": { "name": "Ekovoltis IT" },
   "keywords": ["power-platform", "power-automate", "dataverse", "fabric", "sharepoint", "support"],
@@ -75,6 +75,12 @@
       "title": "Źródło danych logowania do API Salesbooka",
       "description": "<adres Dataverse>|<workflowid>|<nazwa akcji HTTP> flow integracji, z której ppcall bierze dane logowania Basic",
       "default": ""
+    },
+    "support_dirs": {
+      "type": "string",
+      "multiple": true,
+      "title": "Foldery dyżurne",
+      "description": "Rozmowa otwarta w tych folderach jest od startu rozmową dyżurną. Poza nimi strażnik włącza się przy pierwszej pracy nad automatyzacją"
     }
   }
 }
