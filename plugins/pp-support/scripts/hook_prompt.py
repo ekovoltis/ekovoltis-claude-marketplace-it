@@ -119,6 +119,8 @@ def handle(prompt: str, cwd: str) -> None:
 def main() -> None:
     try:
         data = json.load(sys.stdin)
+        if C.ACTIVATION_PROMPT_RE.search(str(data.get("prompt", ""))):
+            C.activate_session(data.get("session_id"), "wiadomosc pracownika")
         handle(str(data.get("prompt", "")), data.get("cwd") or ".")
     except SystemExit:
         raise

@@ -32,6 +32,7 @@ def state_dir() -> Path:
     base = state_base()
     base.mkdir(parents=True, exist_ok=True)
     (base / "akceptacje").mkdir(exist_ok=True)
+    (base / "sesje").mkdir(exist_ok=True)
     return base
 
 
@@ -115,6 +116,8 @@ DEFAULT_CONFIG = {
     # Puste: odczyt z Salesbooka wylaczony.
     "salesbook_api_url": "",
     "salesbook_auth_flow": "",
+    # Foldery, w ktorych kazda rozmowa jest od startu rozmowa dyzurna.
+    "support_dirs": [],
 }
 
 
@@ -192,20 +195,23 @@ def config_problems(cfg: dict) -> list[str]:
 
 
 def load_config() -> dict:
-    path = state_dir() / "config.json"
+    path = state_base() / "config.json"
     cfg = dict(DEFAULT_CONFIG)
     if path.exists():
         try:
             cfg.update(json.loads(path.read_text(encoding="utf-8")))
         except Exception:
-            pass
+            cfg["_nieczytelna"] = True
     cfg["sharepoint_site"] = site_path(cfg.get("sharepoint_site") or "")
     return cfg
 
 
 def save_config(cfg: dict) -> None:
-    (state_dir() / "config.json").write_text(
-        json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Zapis atomowy: hook w innej rozmowie nie moze przeczytac polowy pliku.
+    target = state_dir() / "config.json"
+    tmp = target.with_name(f"config.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, target)
 
 
 # ---------------------------------------------------------------- hosty i tokeny
@@ -752,6 +758,70 @@ def can_execute(cwd, incident_id: str, nr: int) -> tuple[bool, str, dict | None]
     if nr != expected:
         return False, f"Kroki wykonuje sie po kolei. Nastepny dozwolony krok: {expected}.", None
     return True, "ok", steps[nr - 1]
+
+
+# ---------------------------------------------------------------- aktywacja w rozmowie
+
+SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,100}")
+SESSION_MAX_AGE_DAYS = 30
+# Akceptacja i odwolanie w swoim formacie (polecenie na poczatku linii), "dyzur" jako pierwsze slowo wiadomosci.
+ACTIVATION_PROMPT_RE = re.compile(
+    rf"^\s*(AKCEPTUJ[EĘ]|ODWO[LŁ]UJ[EĘ])\s+{ID_RE}\b|\A\s*dy[zż]ur\b|/pp-support:", re.I | re.M)
+
+
+def in_support_dir(cwd) -> bool:
+    try:
+        here = Path(cwd).expanduser().resolve()
+    except (OSError, TypeError):
+        return False
+    for d in _as_list(load_config().get("support_dirs")):
+        try:
+            if here == Path(d).expanduser().resolve() or here.is_relative_to(Path(d).expanduser().resolve()):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def session_active(session_id, cwd) -> bool:
+    """Straznik pilnuje rozmowy dyzurnej. Bez poprawnego identyfikatora rozmowy, przy nieczytelnej
+    konfiguracji albo bledzie odczytu pilnuje zawsze (fail closed)."""
+    if not isinstance(session_id, str) or not SESSION_ID_RE.fullmatch(session_id):
+        return True
+    try:
+        if load_config().get("_nieczytelna"):
+            return True
+        marker = state_base() / "sesje" / f"{session_id}.json"
+        if marker.exists():
+            os.utime(marker)  # data ostatniego uzycia: przycinanie liczy od niej, nie od aktywacji
+            return True
+        if in_support_dir(cwd):
+            # Znacznik zostaje po wyjsciu z folderu dyzurnego (cd w rozmowie).
+            activate_session(session_id, "folder dyzurny")
+            return True
+        return False
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def activate_session(session_id, reason: str) -> None:
+    if not isinstance(session_id, str) or not SESSION_ID_RE.fullmatch(session_id):
+        return
+    path = state_dir() / "sesje" / f"{session_id}.json"
+    if path.exists():
+        return
+    path.write_text(json.dumps({"czas": now().isoformat(), "powod": reason}, ensure_ascii=False), encoding="utf-8")
+    audit({"typ": "aktywacja-rozmowy", "sesja": session_id, "powod": reason})
+
+
+def prune_sessions() -> None:
+    limit = now().timestamp() - SESSION_MAX_AGE_DAYS * 86400
+    for f in (state_dir() / "sesje").glob("*.json"):
+        try:
+            if f.stat().st_mtime < limit:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def audit(event: dict) -> None:

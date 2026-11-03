@@ -1,6 +1,7 @@
 """SessionStart: zapis konfiguracji z ustawien pluginu i kontrola wymagan."""
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -11,8 +12,15 @@ import common as C  # noqa: E402
 
 def main() -> None:
     try:
+        try:
+            data = json.loads(sys.stdin.read() or "{}")
+        except ValueError:
+            data = {}
         cfg = C.config_from_env()
         C.save_config(cfg)
+        C.prune_sessions()
+        if not C.session_active(data.get("session_id"), data.get("cwd") or "."):
+            sys.exit(0)  # rozmowa poza dyzurem: plugin nic nie dopisuje do kontekstu
         missing = [t for t in ("az", "pac") if not shutil.which(t)]
         lines = [
             "[pp-support] Plugin wsparcia automatyzacji Power Platform jest aktywny.",

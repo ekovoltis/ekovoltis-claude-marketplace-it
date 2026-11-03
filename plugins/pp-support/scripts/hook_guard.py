@@ -27,6 +27,9 @@ PS_MUTATION_RE = re.compile(
     r"Import|Invoke|Register|Unregister|Move|Rename|Restore|Approve|Deny|Suspend|Resume)-"
     r"(Az|Admin|PowerApp|Flow|PnP|Mg|Crm|Dataverse|Fabric|Sp)\w*", re.I)
 STATE_RE = re.compile(re.escape(C.STATE_DIR_NAME), re.I)
+# Proby dojscia do stanu z pominieciem pelnej nazwy: wzorce nazw, sklejanie nazwy z czesci, nazwy podkatalogow.
+STATE_EVASION_RE = re.compile(
+    r"support-st|pp-?supp[^\s/\\@]*[*?\[\]'\"+`]|\.claude[\\/]+[^\s\\/]*[*?\[]|akceptacje|[\\/]sesje([\\/*]|\b)", re.I)
 
 PAC_READ = {
     ("help",), ("auth", "list"), ("auth", "who"), ("auth", "select"), ("org", "who"), ("org", "list"),
@@ -158,7 +161,7 @@ def out_targets(args: list[str]) -> list[str]:
     return [args[i + 1] for i, a in enumerate(args[:-1]) if a == "--out"]
 
 
-def classify_segment(seg: str, cwd: str, dialect: str = "bash") -> tuple[str | None, str]:
+def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = True) -> tuple[str | None, str]:
     """Zwraca (decyzja, powod). None = brak decyzji (zwykle uprawnienia Claude Code)."""
     s = seg.strip()
     if not s:
@@ -189,15 +192,17 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash") -> tuple[str | N
                 problem = C.out_path_problem(cwd, target)
                 if problem:
                     return "deny", problem
-                decision, reason = guard_write(str(Path(cwd) / target), cwd)
+                decision, reason = guard_write(str(Path(cwd) / target), cwd, active)
                 if decision:
                     return decision, reason
         if sub in {"get", "runs", "verify", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke",
                    "config", ""}:
             return "allow", "pp-support: operacja tylko do odczytu lub na lokalnych plikach zgloszenia"
         return "deny", f"Nieznana komenda ppcall: {sub}"
-    if STATE_RE.search(s):
+    if STATE_RE.search(s) or STATE_EVASION_RE.search(s) or _norm_path(str(C.state_base())) in _norm_path(s):
         return "deny", "Stan akceptacji pp-support jest dostepny tylko dla ppcall i hookow."
+    if not active:
+        return None, ""
     if TOKEN_RE.search(s):
         return "deny", ("Pobieranie tokenow i logowanie wykonuje czlowiek albo ppcall. "
                         "Do odczytu uzyj: ppcall get <url>.")
@@ -236,9 +241,9 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash") -> tuple[str | N
 RANK = {"deny": 3, "ask": 2, None: 1, "allow": 0}
 
 
-def guard_command(cmd: str, cwd: str, dialect: str = "bash") -> tuple[str | None, str]:
+def guard_command(cmd: str, cwd: str, dialect: str = "bash", active: bool = True) -> tuple[str | None, str]:
     segments = split_segments(cmd, dialect)
-    decisions = [classify_segment(seg, cwd, dialect) for seg in segments] or [(None, "")]
+    decisions = [classify_segment(seg, cwd, dialect, active) for seg in segments] or [(None, "")]
     if len(segments) > 1 and any(d == "ask" for d, _ in decisions):
         return "deny", "ppcall exec uruchamiaj jako osobne polecenie, bez laczenia z innymi."
     worst = max(decisions, key=lambda d: RANK[d[0]])
@@ -260,14 +265,18 @@ def _in_backup(path: str, cwd: str | None) -> bool:
                 or (len(parts) >= 2 and parts[1].rstrip(". ").lower() == C.BACKUP_DIR_NAME))
 
 
-def guard_write(path: str, cwd: str | None = None) -> tuple[str | None, str]:
+def guard_write(path: str, cwd: str | None = None, active: bool = True) -> tuple[str | None, str]:
     p = Path(path).expanduser()
     try:
         p = p.resolve()
     except Exception:
         pass
     text = str(p).replace("\\", "/")
-    if STATE_RE.search(text):
+    try:
+        in_state = p.is_relative_to(C.state_base().expanduser().resolve())
+    except OSError:
+        in_state = True
+    if STATE_RE.search(text) or in_state:
         return "deny", "Stan akceptacji pp-support jest chroniony."
     root = os.environ.get("CLAUDE_PLUGIN_ROOT") or str(C.PLUGIN_ROOT)
     try:
@@ -275,7 +284,7 @@ def guard_write(path: str, cwd: str | None = None) -> tuple[str | None, str]:
             return "deny", "Kod pluginu pp-support jest chroniony przed modyfikacja w trakcie pracy."
     except Exception:
         pass
-    if re.search(r"/\.claude/settings(\.local)?\.json$", text):
+    if active and re.search(r"/\.claude/settings(\.local)?\.json$", text):
         return "deny", "Zmiana ustawien Claude Code w trakcie obslugi zgloszenia jest zablokowana."
     parts: tuple = ()
     try:
@@ -346,20 +355,42 @@ def browser_decision(name: str, tin) -> tuple[str | None, str]:
     return _browser_ask(str(tin.get("action_summary") or name))
 
 
+def activation_trigger(tool: str, tin: dict) -> str | None:
+    """Poczatek pracy dyzurnej w rozmowie: skill pluginu albo pierwsze uzycie ppcall."""
+    if tool == "Skill" and str(tin.get("skill", "")).lower().startswith("pp-support:"):
+        return f"skill {tin.get('skill')}"
+    if tool in ("Bash", "PowerShell"):
+        cmd = str(tin.get("command", ""))
+        if _mentions_ppcall(cmd) or re.search(r"(^|[\s/\\\"'])ppcall(\.py)?([\s\"';&|)]|$)", cmd):
+            return "ppcall"
+    return None
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
         tool = data.get("tool_name", "")
         tin = data.get("tool_input", {}) or {}
         cwd = data.get("cwd") or os.getcwd()
+        if tool == "Read" and "backup" not in str(tin.get("file_path") or "").lower():
+            emit(None)  # odczyt plikow poza kopiami: bez dostepu do stanu, zeby nie spowalniac innych projektow
+        session = data.get("session_id")
+        active = C.session_active(session, cwd)
+        if not active:
+            trigger = activation_trigger(tool, tin)
+            if trigger:
+                C.activate_session(session, trigger)
+                active = True
         if tool in ("Bash", "PowerShell"):
             dialect = "powershell" if tool == "PowerShell" else "bash"
-            decision, reason = guard_command(str(tin.get("command", "")), cwd, dialect)
+            decision, reason = guard_command(str(tin.get("command", "")), cwd, dialect, active)
         elif tool == "Read" and _in_backup(str(tin.get("file_path") or ""), cwd):
             decision, reason = "deny", ("Kopie definicji flow moga zawierac hasla. Do wycofania sluzy krok odwrotny "
                                         "z plan-check, nie odczyt kopii.")
         elif tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
-            decision, reason = guard_write(str(tin.get("file_path") or tin.get("notebook_path") or ""), cwd)
+            decision, reason = guard_write(str(tin.get("file_path") or tin.get("notebook_path") or ""), cwd, active)
+        elif not active:
+            decision, reason = None, ""
         elif BROWSER_TOOL_RE.match(tool):
             decision, reason = browser_decision(tool.split("__")[-1], tin)
         elif tool.startswith("mcp__") and MCP_SCOPE_RE.search(tool):

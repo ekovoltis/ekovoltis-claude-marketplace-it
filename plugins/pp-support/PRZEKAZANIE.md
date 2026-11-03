@@ -1,4 +1,4 @@
-# pp-support: notatka przekazania (stan na 2026-11-03, 1.0.0)
+# pp-support: notatka przekazania (stan na 2026-11-03, 1.1.0)
 
 Ten plik opisuje, skąd wziął się plugin, jakie decyzje już zapadły i co jest do zrobienia. Powstał w rozmowie w claude.ai, której sesja Claude Code nie widzi.
 
@@ -54,6 +54,8 @@ Test dostępów na produkcji 21.10.2026 (Windows, Git Bash, konto e2vitservice, 
 - SharePoint (Graph i REST): test z 21.10.2026 nie doszedł do zapytania przez opisany wyżej błąd ścieżki. Jeśli Azure CLI nie dostanie przyjmowanego tokenu, następny krok to własna rejestracja aplikacji w Entra ID (zgłoszona do administratora).
 - Nazwa narzędzia i pole polecenia dla PowerShell na Windows (strażnik zakłada `PowerShell` i `command`).
 - Składnia fragmentu managed settings z README (`permissions.deny`, `disableBypassPermissionsMode`).
+
+Od 1.1.0 strażnik pilnuje tylko rozmów dyżurnych (decyzja Michała z 2026-11-03: plugin włączony na stałe, ale bez wpływu na inne projekty). Rozmowa staje się dyżurna przy skillu pluginu, pierwszym `ppcall`, w folderze z `support_dirs` albo po wiadomości z akceptacją, odwołaniem lub słowem „dyżur”; znacznik leży w chronionym stanie. Niezależnie od tego zawsze działają: akceptacja i `ppcall exec` (niezmienniki 2–5), ochrona stanu, dziennika wykonania, weryfikacji i kopii. Poza rozmową dyżurną Claude może sięgnąć do usług Microsoft z pominięciem `ppcall`; to świadomie przyjęte w ramach niezmiennika 8.
 
 Od 0.3.0 plugin może być zainstalowany w zakresie user i włączony na stałe (decyzja Michała z 2026-11-03), ze stałym `incidents_dir`. Odczyt hurtowy (`get --all`, `runs`) i `verify` są tylko do odczytu. `flow-patch` obejmuje też całe `inputs` akcji Compose i wartości zmiennych; typ akcji sprawdza ppcall na żywej definicji.
 
