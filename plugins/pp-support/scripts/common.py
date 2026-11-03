@@ -13,7 +13,7 @@ import json
 import os
 import re
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR_NAME = "pp-support-state"
@@ -35,8 +35,14 @@ def state_dir() -> Path:
     return base
 
 
+def incidents_root(cwd: str | Path) -> Path:
+    """Katalog zgloszen: ustawienie incidents_dir albo <cwd>/zgloszenia."""
+    custom = (load_config().get("incidents_dir") or "").strip()
+    return Path(cwd) / Path(custom).expanduser() if custom else Path(cwd) / INCIDENTS_DIR_NAME
+
+
 def incident_dir(cwd: str | Path, incident_id: str) -> Path:
-    return Path(cwd) / INCIDENTS_DIR_NAME / incident_id
+    return incidents_root(cwd) / incident_id
 
 
 def valid_id(incident_id: str) -> bool:
@@ -44,6 +50,7 @@ def valid_id(incident_id: str) -> bool:
 
 
 RESERVED_INCIDENT_FILES = {"plan.md", "wykonanie.jsonl"}
+BACKUP_DIR_NAME = "backup"
 
 
 def out_path_problem(cwd: str | Path, path: str) -> str | None:
@@ -55,9 +62,10 @@ def out_path_problem(cwd: str | Path, path: str) -> str | None:
     base = Path(cwd).expanduser().resolve()
     target = Path(path).expanduser()
     target = (target if target.is_absolute() else base / target).resolve()
-    where = f"--out: zapis tylko do pliku w {INCIDENTS_DIR_NAME}/<ID>/ w katalogu pracy."
+    root = incidents_root(base).expanduser().resolve()
+    where = f"--out: zapis tylko do pliku w katalogu zgloszenia ({root / '<ID>'})."
     try:
-        parts = target.relative_to((base / INCIDENTS_DIR_NAME).resolve()).parts
+        parts = target.relative_to(root).parts
     except ValueError:
         return where
     if len(parts) < 2 or not valid_id(parts[0]):
@@ -65,6 +73,8 @@ def out_path_problem(cwd: str | Path, path: str) -> str | None:
     # Windows pomija koncowe kropki i spacje: "plan.md." to ten sam plik co plan.md
     if len(parts) == 2 and parts[1].rstrip(". ").lower() in RESERVED_INCIDENT_FILES:
         return "--out: plan.md i wykonanie.jsonl nie moga byc nadpisane odpowiedzia HTTP."
+    if parts[1].rstrip(". ").lower() == BACKUP_DIR_NAME:
+        return "--out: kopie definicji w backup/ zapisuje wylacznie ppcall exec."
     if any(p.lower() == ".claude" for p in parts):
         return "--out: zapis do katalogu .claude jest zablokowany."
     for protected in (state_base(), PLUGIN_ROOT):
@@ -97,6 +107,9 @@ DEFAULT_CONFIG = {
     "fabric_workspace_ids": [],
     "docs_dir": "",
     "approval_ttl_min": 60,
+    "incidents_dir": "",
+    # Puste: krok flow-patch wylaczony we wszystkich srodowiskach.
+    "flow_patch_dataverse_urls": [],
 }
 
 
@@ -132,6 +145,7 @@ def config_from_env() -> dict:
         else:
             cfg[key] = env.strip()
     cfg["dataverse_urls"] = [u.rstrip("/") for u in cfg["dataverse_urls"]]
+    cfg["flow_patch_dataverse_urls"] = [u.rstrip("/") for u in cfg["flow_patch_dataverse_urls"]]
     cfg["sharepoint_site"] = site_path(cfg["sharepoint_site"])
     return cfg
 
@@ -151,10 +165,14 @@ def config_problems(cfg: dict) -> list[str]:
     site = cfg.get("sharepoint_site") or ""
     if site and (not site.startswith("/") or ":" in site):
         problems.append(f"sharepoint_site ma byc sciezka witryny zaczynajaca sie od '/', np. /sites/Nazwa (jest: {site})")
-    for u in cfg.get("dataverse_urls") or []:
-        p = urlparse(u)
-        if p.scheme != "https" or not DATAVERSE_HOST_RE.match((p.hostname or "").lower()):
-            problems.append(f"dataverse_urls: niepoprawny adres Dataverse {u} (oczekiwany https://<nazwa>.crm<N>.dynamics.com)")
+    for key in ("dataverse_urls", "flow_patch_dataverse_urls"):
+        for u in cfg.get(key) or []:
+            p = urlparse(u)
+            if p.scheme != "https" or not DATAVERSE_HOST_RE.match((p.hostname or "").lower()):
+                problems.append(f"{key}: niepoprawny adres Dataverse {u} (oczekiwany https://<nazwa>.crm<N>.dynamics.com)")
+    inc = (cfg.get("incidents_dir") or "").strip()
+    if inc and not Path(inc).expanduser().is_absolute():
+        problems.append(f"incidents_dir ma byc sciezka bezwzgledna (jest: {inc})")
     host = (cfg.get("sharepoint_host") or "").lower()
     if host and not SHAREPOINT_HOST_RE.match(host):
         problems.append(f"sharepoint_host: niepoprawny host {host} (oczekiwany <nazwa>.sharepoint.com)")
@@ -200,8 +218,30 @@ CLOUD_HOST_PATTERNS = [
     r"powerplatform\.com", r"powerapps\.com", r"management\.azure\.com",
     r"vault\.azure\.net", r"login\.microsoftonline\.com", r"logic\.azure\.com",
     r"powerautomate\.com", r"database\.windows\.net", r"datawarehouse\.fabric",
+    r"powerplatformusercontent\.com",
 ]
 CLOUD_HOST_RE = re.compile("|".join(CLOUD_HOST_PATTERNS), re.I)
+
+
+# Tresc wejsc i wyjsc akcji z historii przebiegu (inputsLink/outputsLink). Adres niesie podpis SAS,
+# wiec ppcall pobiera go bez tokenu i tylko metoda GET.
+RUN_CONTENT_HOST_RE = re.compile(r"^[a-z0-9]+\.[a-z0-9]+\.environment\.api\.powerplatformusercontent\.com$")
+
+
+def is_run_content_url(url: str) -> bool:
+    try:
+        p = urlparse(url)
+        port = p.port
+    except ValueError:
+        return False
+    return (p.scheme == "https" and port in (None, 443) and "@" not in p.netloc
+            and bool(RUN_CONTENT_HOST_RE.fullmatch((p.hostname or "").lower()))
+            and "sig" in parse_qs(p.query or ""))
+
+
+def redact_url(url: str) -> str:
+    """Adres do dziennika: podpis SAS dziala jak haslo, wiec zapytanie jest wyciete."""
+    return url.split("?", 1)[0] + "?<SAS>" if is_run_content_url(url) else url
 
 
 def resource_for_url(url: str) -> str | None:
@@ -222,6 +262,16 @@ REQUIRED_SECTIONS = [
     "Automatyzacja", "Objaw", "Przyczyna", "Dowody", "Proponowana naprawa",
     "Ryzyko i wpływ", "Plan wycofania", "Weryfikacja po naprawie", "Kroki",
 ]
+FLOW_PATCH_SECTIONS = ["Analiza wpływu", "Test"]
+FLOW_PATCH_MAX_CHANGES = 5
+# Zmieniac wolno tylko wartosci pod inputs.parameters albo inputs.body. Klucze ponizej sa zabronione
+# na kazdym poziomie, bo przekierowuja wywolanie albo zmieniaja polaczenie.
+FLOW_PATCH_INPUT_ROOTS = {"parameters", "body"}
+FLOW_PATCH_FORBIDDEN_KEYS = {"uri", "method", "headers", "host", "authentication", "path", "pathtemplate",
+                             "relativepath", "function", "operationid", "apimanagement", "queries"}
+FLOW_PATCH_FORBIDDEN_PREFIXES = ("connection", "serviceprovider")
+GUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+MODIFIEDON_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 ALLOWED_HTTP_METHODS = {"POST", "PATCH", "PUT"}
 ALLOWED_CLI = {"pac", "az"}
 FORBIDDEN_ARG_RE = re.compile(r"delete|remove|purge|destroy|reset|secret", re.I)
@@ -286,11 +336,13 @@ def step_problems(step: dict, expected_nr: int) -> list[str]:
         body = json.dumps(step.get("body", {}), ensure_ascii=False).lower()
         host = (urlparse(url).hostname or "").lower()
         if host == "api.flow.microsoft.com" and method in {"PATCH", "PUT"} and "definition" in body:
-            errs.append(f"krok {expected_nr}: zmiana definicji flow na produkcji jest zabroniona (SWO: dev, potem wdrozenie)")
+            errs.append(f"krok {expected_nr}: zmiana definicji flow tylko krokiem flow-patch, przebudowa logiki sciezka deweloperska (SWO)")
         if DATAVERSE_HOST_RE.match(host) and "/workflows" in url.lower() and "clientdata" in body:
-            errs.append(f"krok {expected_nr}: zmiana logiki flow przez tabele workflows jest zabroniona")
+            errs.append(f"krok {expected_nr}: zapis clientdata w workflows tylko krokiem flow-patch")
         if "vault.azure.net" in url.lower():
             errs.append(f"krok {expected_nr}: operacje na Key Vault sa zabronione")
+    elif typ == "flow-patch":
+        errs.extend(flow_patch_problems(step, expected_nr))
     elif typ == "cli":
         argv = step.get("argv")
         if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
@@ -303,8 +355,148 @@ def step_problems(step: dict, expected_nr: int) -> list[str]:
             if any(FORBIDDEN_ARG_RE.search(a) for a in argv):
                 errs.append(f"krok {expected_nr}: argumenty zawieraja operacje zabroniona (delete/remove/secret/...)")
     else:
-        errs.append(f"krok {expected_nr}: 'typ' musi byc 'http' albo 'cli'")
+        errs.append(f"krok {expected_nr}: 'typ' musi byc 'http', 'cli' albo 'flow-patch'")
     return errs
+
+
+def _split_flow_patch_path(path) -> tuple[int, str | None]:
+    """Indeks klucza inputs akcji docelowej albo (-1, powod odrzucenia)."""
+    if not isinstance(path, list) or not path or not all(isinstance(k, str) and k for k in path):
+        return -1, "sciezka musi byc lista niepustych tekstow"
+    if path[:3] != ["properties", "definition", "actions"]:
+        return -1, "sciezka musi zaczynac sie od properties, definition, actions (wyzwalacze i parametry flow sa poza zakresem)"
+    i = 2
+    while True:
+        if len(path) < i + 2 or path[i] != "actions":
+            return -1, "sciezka musi prowadzic przez actions/<nazwa akcji>"
+        i += 2
+        if i >= len(path):
+            return -1, "sciezka konczy sie na akcji, a musi wskazywac klucz w jej inputs"
+        head = path[i]
+        if head == "inputs":
+            return i, None
+        if head in ("else", "default"):
+            i += 1
+        elif head == "cases" and len(path) >= i + 3:
+            i += 2
+        elif head != "actions":
+            return -1, f"element '{head}' jest poza zakresem (dozwolona tylko zmiana wartosci w inputs akcji)"
+
+
+def flow_patch_path_problem(path) -> str | None:
+    """Sciezka musi prowadzic przez akcje (takze zagniezdzone) do wartosci pod inputs.parameters albo inputs.body."""
+    i, problem = _split_flow_patch_path(path)
+    if problem:
+        return problem
+    keys = path[i + 1:]
+    if len(keys) < 2 or keys[0] not in FLOW_PATCH_INPUT_ROOTS:
+        return "zmienic mozna tylko wartosc pod inputs/parameters/<klucz> albo inputs/body/<klucz>"
+    bad = [k for k in keys if k.lower() in FLOW_PATCH_FORBIDDEN_KEYS
+           or k.lower().startswith(FLOW_PATCH_FORBIDDEN_PREFIXES)]
+    if bad:
+        return f"klucz {bad[0]} jest zabroniony (zmiana adresu, metody, naglowkow lub polaczenia)"
+    return None
+
+
+def flow_patch_label(path: list[str]) -> str:
+    """Nazwa akcji i klucz w jej inputs, czytelne dla czlowieka. Tylko dla sciezki po walidacji."""
+    i, _ = _split_flow_patch_path(path)
+    return f"{path[i - 1]}: {'/'.join(path[i + 1:])}"
+
+
+def flow_patch_problems(step: dict, nr: int) -> list[str]:
+    errs = []
+    env = str(step.get("srodowisko", "")).rstrip("/")
+    host = (urlparse(env).hostname or "").lower()
+    if not env.startswith("https://") or not DATAVERSE_HOST_RE.match(host):
+        errs.append(f"krok {nr}: 'srodowisko' musi byc adresem Dataverse https://<nazwa>.crm<N>.dynamics.com")
+    elif env not in [u.rstrip("/") for u in load_config().get("flow_patch_dataverse_urls") or []]:
+        errs.append(f"krok {nr}: flow-patch nie jest wlaczony dla {env} (ustawienie flow_patch_dataverse_urls)")
+    if not GUID_RE.fullmatch(str(step.get("workflowid", ""))):
+        errs.append(f"krok {nr}: 'workflowid' musi byc identyfikatorem GUID")
+    if not MODIFIEDON_RE.fullmatch(str(step.get("oczekiwany_modifiedon", ""))):
+        errs.append(f"krok {nr}: 'oczekiwany_modifiedon' w formacie RRRR-MM-DDTGG:MM:SSZ, odczytany z workflows")
+    changes = step.get("zmiany")
+    if not isinstance(changes, list) or not changes:
+        return errs + [f"krok {nr}: 'zmiany' musi byc niepusta lista"]
+    if len(changes) > FLOW_PATCH_MAX_CHANGES:
+        errs.append(f"krok {nr}: najwyzej {FLOW_PATCH_MAX_CHANGES} zmian w jednym kroku")
+    seen = set()
+    for j, ch in enumerate(changes, start=1):
+        where = f"krok {nr}, zmiana {j}"
+        if not isinstance(ch, dict):
+            errs.append(f"{where}: musi byc obiektem z polami sciezka, bylo, ma_byc")
+            continue
+        problem = flow_patch_path_problem(ch.get("sciezka"))
+        if problem:
+            errs.append(f"{where}: {problem}")
+        elif tuple(ch["sciezka"]) in seen:
+            errs.append(f"{where}: ta sama sciezka wystepuje dwa razy")
+        else:
+            seen.add(tuple(ch["sciezka"]))
+        if not isinstance(ch.get("bylo"), str) or not isinstance(ch.get("ma_byc"), str):
+            errs.append(f"{where}: 'bylo' i 'ma_byc' musza byc tekstem")
+        elif ch["bylo"] == ch["ma_byc"]:
+            errs.append(f"{where}: 'ma_byc' jest takie samo jak 'bylo'")
+    return errs
+
+
+def get_at(obj, path: list[str]):
+    for key in path:
+        if not isinstance(obj, dict) or key not in obj:
+            raise KeyError(key)
+        obj = obj[key]
+    return obj
+
+
+def set_at(obj, path: list[str], value) -> None:
+    get_at(obj, path[:-1])[path[-1]] = value
+
+
+def leaf_diff(a, b, prefix: tuple = ()) -> list[tuple]:
+    """Sciezki, pod ktorymi definicje sie roznia (klucz dodany, usuniety albo inna wartosc)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        diffs = []
+        for k in sorted(set(a) | set(b)):
+            if k in a and k in b:
+                diffs.extend(leaf_diff(a[k], b[k], prefix + (k,)))
+            else:
+                diffs.append(prefix + (k,))
+        return diffs
+    if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        diffs = []
+        for i, (x, y) in enumerate(zip(a, b)):
+            diffs.extend(leaf_diff(x, y, prefix + (str(i),)))
+        return diffs
+    return [] if a == b and type(a) is type(b) else [prefix]
+
+
+def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dict | None]:
+    """Stan flow z Dataverse wobec kroku. ppcall sprawdza go w plan-check i ponownie przed zapisem."""
+    errs = []
+    if workflow.get("ismanaged"):
+        errs.append("flow jest w rozwiazaniu zarzadzanym, zmiana tylko przez wdrozenie rozwiazania")
+    if workflow.get("category") != 5:
+        errs.append("to nie jest flow chmurowy (category 5)")
+    if workflow.get("modifiedon") != step.get("oczekiwany_modifiedon"):
+        errs.append(f"flow zmienil sie od przygotowania planu: modifiedon {workflow.get('modifiedon')}, "
+                    f"w planie {step.get('oczekiwany_modifiedon')}")
+    try:
+        definition = json.loads(workflow.get("clientdata") or "")
+    except (TypeError, ValueError):
+        return errs + ["nie mozna odczytac definicji flow (clientdata)"], None
+    for ch in step.get("zmiany") or []:
+        label = flow_patch_label(ch["sciezka"])
+        try:
+            current = get_at(definition, ch["sciezka"])
+        except KeyError:
+            errs.append(f"{label}: sciezka nie istnieje w aktualnej definicji")
+            continue
+        if not isinstance(current, str):
+            errs.append(f"{label}: aktualna wartosc nie jest tekstem")
+        elif current != ch["bylo"]:
+            errs.append(f"{label}: aktualna wartosc rozni sie od 'bylo'")
+    return errs, definition
 
 
 def check_plan(text: str) -> tuple[list[str], list[dict]]:
@@ -326,10 +518,20 @@ def check_plan(text: str) -> tuple[list[str], list[dict]]:
             errs.append("plan nie zawiera zadnego kroku do wykonania")
         for i, s in enumerate(steps, start=1):
             errs.extend(step_problems(s if isinstance(s, dict) else {}, i))
+        if any(isinstance(s, dict) and s.get("typ") == "flow-patch" for s in steps):
+            for name in FLOW_PATCH_SECTIONS:
+                if len(_strip_comments(sections.get(name, ""))) < 20:
+                    errs.append(f"krok flow-patch wymaga sekcji '## {name}' z trescia")
     return errs, steps
 
 
 def step_summary(step: dict) -> str:
+    if step.get("typ") == "flow-patch":
+        changes = step.get("zmiany") or []
+        labels = "; ".join(flow_patch_label(c["sciezka"]) for c in changes
+                           if isinstance(c, dict) and not flow_patch_path_problem(c.get("sciezka")))
+        return (f"flow-patch {str(step.get('srodowisko', '')).rstrip('/')} workflows({step.get('workflowid')}): "
+                f"{len(changes)} zmian(y): {labels}")
     if step.get("typ") == "http":
         return f"{str(step.get('metoda', '')).upper()} {step.get('url', '')}"
     return " ".join(step.get("argv", []))

@@ -1,4 +1,4 @@
-# pp-support 0.1.1
+# pp-support 0.2.0
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -51,9 +51,23 @@ pp-support/
 | odczyt wartości sekretów Key Vault | brak, poza zakresem pluginu |
 | narzędzia MCP do Dataverse, Power Platform, Fabric, SharePoint, Azure z operacją zapisu | krok planu |
 | zapis do stanu akceptacji, kodu pluginu, ustawień Claude Code, dziennika wykonania | brak |
-| w planie: DELETE, argumenty delete/remove/purge/secret, zmiana definicji flow, hosty spoza listy | usuwanie i zmiany logiki robi człowiek, logika przez ścieżkę deweloperską (SWO) |
+| zapis do kopii definicji w `zgloszenia/<ID>/backup/` | kopie robi wyłącznie `ppcall exec` |
+| w planie: DELETE, argumenty delete/remove/purge/secret, zmiana definicji flow poza krokiem `flow-patch`, hosty spoza listy | usuwanie i przebudowę logiki robi człowiek, logika przez ścieżkę deweloperską (SWO) |
 
-Dozwolone hosty dla tokenów: Graph, ARM, Power Automate, BAP, Power Platform API, Fabric, środowiska Dataverse (`*.crm*.dynamics.com`), SharePoint (`*.sharepoint.com`). Na inne adresy `ppcall` nie wyśle tokenu.
+Dozwolone hosty dla tokenów: Graph, ARM, Power Automate, BAP, Power Platform API, Fabric, środowiska Dataverse (`*.crm*.dynamics.com`), SharePoint (`*.sharepoint.com`). Na inne adresy `ppcall` nie wyśle tokenu. Wyjątek bez tokenu: treść wejść i wyjść akcji z historii przebiegu (`inputsLink`/`outputsLink` na `*.environment.api.powerplatformusercontent.com`), którą `ppcall get` pobiera tylko metodą GET, bo podpis SAS jest w adresie. Do dziennika audytu adres trafia bez podpisu.
+
+## Zmiana wartości w akcji flow (`flow-patch`)
+
+Drobną, zdiagnozowaną poprawkę logiki (np. jedno wyrażenie w polu szablonu) można wykonać krokiem planu `flow-patch`. Krok jest domyślnie wyłączony. Włącza go ustawienie `flow_patch_dataverse_urls`, osobno dla każdego środowiska.
+
+- Zmienić można tylko istniejącą wartość tekstową pod `inputs/parameters` albo `inputs/body` istniejącej akcji, najwyżej 5 zmian w jednym flow na krok. Wyzwalacze, `runAfter`, `type`, warunki (`expression`), połączenia i klucze przekierowujące wywołanie (`uri`, `method`, `headers`, `host`, `authentication`, `path`, `pathTemplate`, `function` i podobne) są odrzucane, tak samo flow z rozwiązań zarządzanych.
+- Pytanie Claude Code przed wykonaniem pokazuje wartości „było” i „ma być”.
+- Plan musi mieć sekcje „Analiza wpływu” i „Test”.
+- `plan-check` sprawdza na aktualnej definicji `modifiedon`, ścieżki i wartości `bylo`, wypisuje różnice i krok wycofania.
+- `exec` sprawdza to samo ponownie, zapisuje kopię do `zgloszenia/<ID>/backup/`, wysyła `PATCH workflows(<id>)` z `If-Match`, a potem porównuje definicję z kopią. Różnica pod inną ścieżką przywraca kopię i kończy krok błędem.
+- Wycofanie to nowy plan z krokiem odwrotnym i nową akceptacją.
+
+Zapis `clientdata` włączonego flow nie wymaga wyłączania: flow zostaje włączony, a Power Automate od razu pokazuje nową definicję (sprawdzone na produkcji 02.11.2026 na trzech flow).
 
 ## Ograniczenia, które trzeba znać
 
@@ -79,7 +93,7 @@ Zalecane uzupełnienie w managed settings Claude Code (do weryfikacji z bieżąc
 }
 ```
 
-Katalog `zgloszenia/` może zawierać dane klientów odczytane z Dataverse. Trzymaj go lokalnie albo w miejscu z kontrolą dostępu, nie w ogólnodostępnym repozytorium.
+Katalog `zgloszenia/` może zawierać dane klientów odczytane z Dataverse, a `backup/` pełne definicje flow. Trzymaj go lokalnie albo w miejscu z kontrolą dostępu, nie w ogólnodostępnym repozytorium.
 
 ## Wymagania na stanowisku
 
@@ -95,6 +109,8 @@ claude --plugin-dir ./pp-support
 ```
 
 Plugin ma `defaultEnabled: false`, bo jego hooki działają w całej sesji. Po instalacji z marketplace włącz go świadomie w sesjach dyżurnych: `claude plugin enable pp-support`, i uzupełnij ustawienia w `/plugin` (adresy Dataverse, ID środowisk, host i witryna SharePoint, obszary Fabric).
+
+Instalacja w zakresie `user` daje plugin w każdym folderze, ale włączony plugin uruchamia strażnika w każdej sesji, także przy zwykłej pracy z kodem (blokuje `curl`, `az rest`, zapisy ustawień). Dlatego w zakresie `user` zostaw go wyłączonego i włączaj tylko na dyżur. Ustawienie `incidents_dir` wskazuje stały katalog zgłoszeń, niezależny od folderu sesji. Puste oznacza `zgloszenia/` w folderze sesji.
 
 ## Przygotowanie stanowiska dyżurnego na Windows
 

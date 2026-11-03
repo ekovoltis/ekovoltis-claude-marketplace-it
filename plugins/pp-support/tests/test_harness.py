@@ -330,6 +330,347 @@ r = subprocess.run([BASH, str(SCRIPTS / "run-py"), "hook_session_start"], input=
                    env={**opt, "CLAUDE_PLUGIN_OPTION_DATAVERSE_URLS": "http://zly.example.com"})
 expect("SessionStart: blad ustawien zgloszony", "Blad ustawien pluginu: dataverse_urls" in r.stdout, True)
 
+print("13. Krok flow-patch (Dataverse podmieniony)")
+import contextlib  # noqa: E402
+import copy  # noqa: E402
+import stat as _stat  # noqa: E402
+
+WF = "074310f4-d3df-ef11-8eea-6045bddff7b7"
+OLD = "@formatDateTime(outputs('Pobierz_Fakturę')?['body/eko_originalinvoice/eko_issuedate'], 'yyyy.MM.dd')"
+NEW = "@formatDateTime(outputs('Korygowane_2')?['body/eko_issuedate'], 'yyyy.MM.dd')"
+ACTION = ["properties", "definition", "actions", "Switch", "cases", "Sprzedaż-1", "actions", "Switch_2",
+          "cases", "Case", "actions", "Condition_7", "else", "actions", "Populate_a_Microsoft_Word_template_4"]
+P1 = ACTION + ["inputs", "parameters", "dynamicFileSchema/755787681"]
+P2 = ACTION + ["inputs", "parameters", "dynamicFileSchema/1202989038"]
+DEFINITION = {"properties": {"connectionReferences": {"shared_wordonlinebusiness": {"connection": {"id": "c1"}}},
+                             "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Switch": {"type": "Switch", "expression": "@x", "cases": {"Sprzedaż-1": {"case": "S1", "actions": {
+        "Switch_2": {"type": "Switch", "cases": {"Case": {"actions": {
+            "Condition_7": {"type": "If", "expression": {"equals": [1, 1]}, "actions": {}, "else": {"actions": {
+                "Populate_a_Microsoft_Word_template_4": {
+                    "type": "OpenApiConnection", "runAfter": {},
+                    "inputs": {"host": {"connectionName": "shared_wordonlinebusiness"},
+                               "parameters": {"dynamicFileSchema/755787681": OLD,
+                                              "dynamicFileSchema/1202989038": OLD,
+                                              "source": "groups/x"}}}}}}}}}}}}}}}}}}
+
+
+class FakeDataverse:
+    def __init__(self):
+        self.reset()
+
+    def reset(self, managed=False):
+        self.clientdata = json.dumps(DEFINITION, ensure_ascii=False)
+        self.version, self.modifiedon, self.managed = 100, "2026-08-25T09:52:49Z", managed
+        self.patches, self.extra_change = [], False
+
+    def record(self):
+        return {"@odata.etag": f'W/"{self.version}"', "name": "[MAIN] 6. Invoicing - create PDF document",
+                "clientdata": self.clientdata, "modifiedon": self.modifiedon, "statecode": 1, "statuscode": 2,
+                "ismanaged": self.managed, "category": 5}
+
+    def __call__(self, method, url, body=None, timeout=90, headers=None):
+        if f"workflows({WF})" not in url:
+            return 404, b"{}"
+        if method == "GET":
+            return 200, json.dumps(self.record(), ensure_ascii=False).encode("utf-8")
+        if method == "PATCH":
+            self.patches.append({"if_match": (headers or {}).get("If-Match"), "body": body})
+            if (headers or {}).get("If-Match") != f'W/"{self.version}"':
+                return 412, b'{"error": "precondition"}'
+            data = json.loads(body["clientdata"])
+            if self.extra_change:  # symulacja: zapis zmienia tez cos poza zadeklarowanymi sciezkami
+                data["properties"]["definition"]["triggers"]["manual"]["type"] = "Recurrence"
+                self.extra_change = False
+            self.clientdata = json.dumps(data, ensure_ascii=False)
+            self.version += 1
+            self.modifiedon = f"2026-11-03T10:00:{self.version % 60:02d}Z"
+            return 204, b""
+        return 405, b"{}"
+
+
+FAKE = FakeDataverse()
+P.http = FAKE
+cfg = C.load_config()
+cfg["flow_patch_dataverse_urls"] = []
+C.save_config(cfg)
+
+
+def fp_plan(changes, modifiedon="2026-08-25T09:52:49Z", env=DV, sections=True) -> str:
+    step = {"nr": 1, "opis": "Data faktury korygowanej w polu „z dnia” korekty", "typ": "flow-patch",
+            "srodowisko": env, "workflowid": WF, "oczekiwany_modifiedon": modifiedon, "zmiany": changes}
+    extra = ("## Analiza wpływu\nZmienia 54 korekty korekt, 332 pojedyncze korekty dają identyczny wynik.\n\n"
+             "## Test\nTest na kopii flow w ekovoltis-test, dwie zmiany w diffie, PDF z poprawną datą.\n\n"
+             if sections else "")
+    return (PLAN.split("## Kroki")[0].replace("INC-1", "FP-1").replace("## Plan wycofania", extra + "## Plan wycofania")
+            + "## Kroki\n```json\n" + json.dumps([step], ensure_ascii=False, indent=1) + "\n```\n")
+
+
+CHANGES = [{"sciezka": P1, "bylo": OLD, "ma_byc": NEW}, {"sciezka": P2, "bylo": OLD, "ma_byc": NEW}]
+
+
+def plan_check(text: str, incident: str = "FP-1") -> tuple[int | None, str]:
+    d = WORK / "zgloszenia" / incident
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "plan.md").write_text(text, encoding="utf-8")
+    buf = io.StringIO()
+    code = None
+    with contextlib.redirect_stdout(buf):
+        try:
+            P.cmd_plan_check([incident])
+        except SystemExit as e:
+            code = e.code
+    return code, buf.getvalue()
+
+
+code, txt = plan_check(fp_plan(CHANGES))
+expect("flow-patch wylaczony bez ustawienia", (code, "nie jest wlaczony" in txt), (2, True))
+cfg["flow_patch_dataverse_urls"] = [DV]
+C.save_config(cfg)
+code, txt = plan_check(fp_plan(CHANGES))
+expect("flow-patch: plan-check przechodzi", code, None)
+expect("flow-patch: diff z dwiema zmianami", txt.count("ma byc:"), 2)
+expect("flow-patch: krok wycofania wypisany", '"bylo": "' + NEW.replace('"', '\\"') in txt, True)
+expect("flow-patch: polskie znaki w sciezce bez strat", "Sprzedaż-1" in txt, True)
+expect("flow-patch: plan-check niczego nie zapisuje", FAKE.patches, [])
+expect("flow-patch: bez sekcji Analiza wpływu i Test", plan_check(fp_plan(CHANGES, sections=False))[0], 2)
+code, txt = plan_check(fp_plan([{**CHANGES[0], "bylo": OLD + " "}]))
+expect("flow-patch: 'bylo' niezgodne z definicja", (code, "rozni sie od 'bylo'" in txt), (2, True))
+code, txt = plan_check(fp_plan(CHANGES, modifiedon="2026-08-01T00:00:00Z"))
+expect("flow-patch: inne modifiedon w plan-check", (code, "zmienil sie" in txt), (2, True))
+for label, path in [
+    ("runAfter", ACTION + ["runAfter", "x"]),
+    ("type akcji", ACTION + ["type"]),
+    ("wyzwalacz", ["properties", "definition", "triggers", "manual", "inputs", "schema"]),
+    ("expression warunku", ["properties", "definition", "actions", "Switch", "cases", "Sprzedaż-1", "actions",
+                            "Switch_2", "cases", "Case", "actions", "Condition_7", "expression"]),
+    ("connectionReferences", ["properties", "connectionReferences", "shared_wordonlinebusiness", "connection", "id"]),
+    ("host polaczenia", ACTION + ["inputs", "host", "connectionName"]),
+    ("uri", ACTION + ["inputs", "uri"]),
+    ("cale inputs", ACTION + ["inputs"]),
+    ("cale parameters", ACTION + ["inputs", "parameters"]),
+    ("pathTemplate", ACTION + ["inputs", "pathTemplate", "template"]),
+    ("function", ACTION + ["inputs", "function", "id"]),
+    ("klucz poza parameters i body", ACTION + ["inputs", "retryPolicy", "count"]),
+    ("connectionName w parameters", ACTION + ["inputs", "parameters", "connectionName"]),
+    ("sciezka tekstem", "properties.definition.actions.X.inputs.a"),
+]:
+    expect(f"flow-patch: {label} odrzucone", plan_check(fp_plan([{"sciezka": path, "bylo": "a", "ma_byc": "b"}]))[0], 2)
+expect("flow-patch: wiecej niz 5 zmian",
+       plan_check(fp_plan([{"sciezka": ACTION + ["inputs", "parameters", f"k{i}"], "bylo": "a", "ma_byc": "b"}
+                           for i in range(6)]))[0], 2)
+expect("flow-patch: GUID z nowa linia",
+       plan_check(fp_plan(CHANGES).replace(WF, WF + "\\n", 1).replace(f"workflows({WF}\\n", f"workflows({WF}"))[0], 2)
+expect("flow-patch: etykieta wedlug akcji, nie zagniezdzonego inputs",
+       C.flow_patch_label(ACTION + ["inputs", "body", "inputs", "x"]),
+       "Populate_a_Microsoft_Word_template_4: body/inputs/x")
+expect("flow-patch: srodowisko spoza listy",
+       plan_check(fp_plan(CHANGES, env="https://ekovoltis.crm4.dynamics.com"))[0], 2)
+FAKE.reset(managed=True)
+code, txt = plan_check(fp_plan(CHANGES))
+expect("flow-patch: flow zarzadzany", (code, "zarzadzanym" in txt), (2, True))
+FAKE.reset()
+
+
+def accept(incident: str, text: str) -> None:
+    hh = C.plan_hash(text)
+    r = prompt(f"AKCEPTUJĘ {incident} {hh}\nPrzyczyna: Szablon korekty brał datę z faktury pierwotnej zamiast z "
+               f"faktury, którą korygujemy.\nNaprawa: W dwóch polach daty w akcji szablonu podmieniamy źródło na "
+               f"fakturę korygowaną, nic więcej.")
+    expect(f"akceptacja {incident}", "additionalContext" in json.dumps(r or {}), True)
+
+
+def run_exec(incident: str) -> int | None:
+    with contextlib.redirect_stdout(io.StringIO()):
+        try:
+            P.cmd_exec([incident, "1"])
+        except SystemExit as e:
+            return e.code
+    return None
+
+
+text = fp_plan(CHANGES)
+plan_check(text)
+accept("FP-1", text)
+ask = hook("hook_guard", {"tool_name": "Bash", "tool_input": {"command": f"{Q} exec FP-1 1"}, "cwd": str(WORK)})
+expect("flow-patch: exec -> pytanie", ask["hookSpecificOutput"]["permissionDecision"] if ask else None, "ask")
+reason = (ask or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+expect("flow-patch: pytanie mowi o kopii", "kopie" in reason, True)
+expect("flow-patch: pytanie pokazuje wartosci", ("Korygowane_2" in reason, "Pobierz_Fakturę" in reason), (True, True))
+FAKE.modifiedon = "2026-11-03T08:00:00Z"  # ktos zmienil flow po akceptacji
+expect("flow-patch: zmiana flow po akceptacji -> odmowa", run_exec("FP-1"), 4)
+expect("flow-patch: po odmowie nic nie zapisano", FAKE.patches, [])
+
+FAKE.reset()
+text = fp_plan(CHANGES).replace("Wyłączenie flow", "Wyłączenie  flow")  # nowy plan = nowa akceptacja
+(WORK / "zgloszenia/FP-1/plan.md").write_text(text, encoding="utf-8")
+C.revoke_approval("FP-1")
+accept("FP-1", text)
+expect("flow-patch: exec", run_exec("FP-1"), None)
+expect("flow-patch: If-Match z etagiem", FAKE.patches[0]["if_match"] if FAKE.patches else None, 'W/"100"')
+after = json.loads(FAKE.clientdata)
+expect("flow-patch: diff po zapisie = 2 sciezki", sorted(C.leaf_diff(DEFINITION, after)), sorted([tuple(P1), tuple(P2)]))
+expect("flow-patch: nowa wartosc", C.get_at(after, P1), NEW)
+backups = list((WORK / "zgloszenia/FP-1/backup").glob(f"{WF}-*.json"))
+expect("flow-patch: kopia zapisana", len(backups), 1)
+expect("flow-patch: kopia = definicja sprzed zmiany",
+       C.leaf_diff(DEFINITION, json.loads(backups[0].read_text(encoding="utf-8"))) if backups else None, [])
+expect("flow-patch: kopia tylko do odczytu", bool(backups) and not os.stat(backups[0]).st_mode & _stat.S_IWRITE, True)
+entry = json.loads((WORK / "zgloszenia/FP-1/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+expect("flow-patch: dziennik", (entry["sukces"], entry["modifiedon_przed"], bool(entry.get("modifiedon_po")),
+                                len(entry.get("zmiany", []))), (True, "2026-08-25T09:52:49Z", True, 2))
+expect("flow-patch: zapis do backup/ narzedziem Write", decision(str(backups[0]) if backups else "x", "Write"), "deny")
+expect("flow-patch: --out do backup/", decision(f'{Q} get "{DV}/api/data/v9.2/WhoAmI" --out zgloszenia/FP-1/backup/x.json'), "deny")
+
+print("   wycofanie: krok odwrotny w nowym planie")
+rev = P.reverse_step({"opis": "x", "srodowisko": DV, "workflowid": WF, "zmiany": CHANGES})
+rev["oczekiwany_modifiedon"] = entry["modifiedon_po"]
+text = fp_plan(rev["zmiany"], modifiedon=entry["modifiedon_po"]).replace("FP-1", "FP-2")
+code, _ = plan_check(text, "FP-2")
+expect("wycofanie: plan-check", code, None)
+accept("FP-2", text)
+expect("wycofanie: exec", run_exec("FP-2"), None)
+expect("wycofanie: definicja jak kopia", C.leaf_diff(DEFINITION, json.loads(FAKE.clientdata)), [])
+
+print("   nieoczekiwana roznica po zapisie -> przywrocenie kopii")
+FAKE.reset()
+FAKE.extra_change = True
+text = fp_plan(CHANGES).replace("FP-1", "FP-3")
+plan_check(text, "FP-3")
+accept("FP-3", text)
+expect("dodatkowa roznica: krok nieudany", run_exec("FP-3"), 4)
+expect("dodatkowa roznica: definicja przywrocona", C.leaf_diff(DEFINITION, json.loads(FAKE.clientdata)), [])
+entry = json.loads((WORK / "zgloszenia/FP-3/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+expect("dodatkowa roznica: w dzienniku", (entry.get("przywrocono"), entry.get("nieoczekiwane_roznice")),
+       (True, ["properties / definition / triggers / manual / type"]))
+expect("dodatkowa roznica: plan zatrzymany", decision(f"{Q} exec FP-3 1"), "deny")
+print("   wyjatek przy sprawdzaniu po zapisie -> przywrocenie kopii")
+
+
+class FlakyRead(FakeDataverse):
+    def __call__(self, method, url, body=None, timeout=90, headers=None):
+        if method == "GET" and self.patches and len(self.patches) == 1 and not getattr(self, "failed", False):
+            self.failed = True
+            raise RuntimeError("przerwane polaczenie")
+        return super().__call__(method, url, body, timeout, headers)
+
+
+FLAKY = FlakyRead()
+P.http = FLAKY
+text = fp_plan(CHANGES).replace("FP-1", "FP-4")
+plan_check(text, "FP-4")
+accept("FP-4", text)
+expect("wyjatek po zapisie: krok nieudany", run_exec("FP-4"), 4)
+expect("wyjatek po zapisie: definicja przywrocona", C.leaf_diff(DEFINITION, json.loads(FLAKY.clientdata)), [])
+lines = (WORK / "zgloszenia/FP-4/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()
+expect("wyjatek po zapisie: wpis przed zapisem i wynik",
+       (json.loads(lines[0]).get("etap"), json.loads(lines[-1]).get("przywrocono")), ("zapis-rozpoczety", True))
+P.http = FAKE
+cfg["flow_patch_dataverse_urls"] = []
+C.save_config(cfg)
+
+print("14. Tresc przebiegow (SAS), adresy URL i konsola")
+SAS = ("https://00583a33aa23e453b133bb0d0f8fcc.4c.environment.api.powerplatformusercontent.com:443/powerautomate/"
+       "flows/x/runs/y/actions/z/contents/ActionOutputs?api-version=2016-06-01&se=2026-11-03T12%3A00%3A00Z&sp=%2Fruns%2Fread&sv=1.0&sig=abc")
+expect("SAS: rozpoznany", C.is_run_content_url(SAS), True)
+expect("SAS: bez podpisu nie", C.is_run_content_url(SAS.replace("&sig=abc", "")), False)
+expect("SAS: obca domena nie", C.is_run_content_url(SAS.replace("powerplatformusercontent.com", "evil.com")), False)
+expect("SAS: inny port nie", C.is_run_content_url(SAS.replace(":443/", ":8443/")), False)
+expect("SAS: dane logowania w adresie nie", C.is_run_content_url(SAS.replace("https://", "https://u:p@")), False)
+expect("SAS: 'assig=' to nie podpis", C.is_run_content_url(SAS.replace("&sig=abc", "&assig=abc")), False)
+expect("SAS: podpis wyciety z dziennika", "sig=" in C.redact_url(SAS), False)
+expect("SAS: nie dostaje tokenu", C.resource_for_url(SAS), None)
+expect("SAS: curl zablokowany", decision(f'curl "{SAS}"'), "deny")
+expect("SAS: ppcall get dozwolony", decision(f'{Q} get "{SAS}" --out zgloszenia/INC-1/wyjscie.json'), "allow")
+import importlib  # noqa: E402
+import urllib.request as _ur  # noqa: E402
+P2M = importlib.reload(P)  # prawdziwe http, bez podmiany z punktu 13
+sent = {}
+
+
+class _Resp:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return b'{"body": "ok"}'
+
+
+def _urlopen(req, timeout=90):
+    sent.update({"url": req.full_url, "headers": dict(req.header_items())})
+    return _Resp()
+
+
+def _no_token(resource):
+    raise AssertionError("token pobrany dla SAS")
+
+
+real_urlopen, P2M.get_token = _ur.urlopen, _no_token
+_ur.urlopen = _urlopen
+try:
+    expect("SAS: odczyt bez tokenu", P2M.http("GET", SAS)[0], 200)
+    with contextlib.redirect_stdout(io.StringIO()):
+        P2M.cmd_get([SAS])
+    last = (TMP / "state/audyt.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    expect("SAS: audyt bez podpisu", "sig=abc" in last, False)
+    expect("SAS: brak naglowka Authorization", any(k.lower() == "authorization" for k in sent.get("headers", {})), False)
+    try:
+        P2M.http("POST", SAS, {})
+        expect("SAS: POST odrzucony", "brak bledu", "RuntimeError")
+    except RuntimeError:
+        expect("SAS: POST odrzucony", "RuntimeError", "RuntimeError")
+    P2M.get_token = lambda resource: "t"
+    P2M.http("GET", f"{DV}/api/data/v9.2/eko_invoices?$filter=eko_name eq 'Korekta ą'&$top=1")
+    expect("URL: spacje i polskie znaki zakodowane", sent.get("url"),
+           f"{DV}/api/data/v9.2/eko_invoices?$filter=eko_name%20eq%20'Korekta%20%C4%85'&$top=1")
+    expect("URL: juz zakodowany bez zmian", P2M.encode_url("https://a.crm4.dynamics.com/x?$filter=a%20eq%201"),
+           "https://a.crm4.dynamics.com/x?$filter=a%20eq%201")
+finally:
+    _ur.urlopen = real_urlopen
+
+import builtins  # noqa: E402
+real_print = builtins.print
+
+
+def _broken_print(*a, **k):
+    raise OSError(22, "Invalid argument")
+
+
+builtins.print = _broken_print
+try:
+    P2M.out("Zażółć gęślą jaźń")
+    console = "ok"
+except OSError:
+    console = "OSError"
+finally:
+    builtins.print = real_print
+expect("konsola: OSError przy print nie przerywa ppcall", console, "ok")
+
+print("15. Staly katalog zgloszen (incidents_dir)")
+INC = TMP / "dyzur-zgloszenia"
+cfg["incidents_dir"] = str(INC)
+C.save_config(cfg)
+expect("incidents_dir: katalog zgloszenia", C.incident_dir(WORK, "INC-5"), INC / "INC-5")
+expect("incidents_dir: --out w stalym katalogu", C.out_path_problem(WORK, str(INC / "INC-5" / "a.json")), None)
+expect("incidents_dir: --out w cwd odrzucony", C.out_path_problem(WORK, "zgloszenia/INC-5/a.json") is not None, True)
+expect("incidents_dir: wykonanie.jsonl chroniony",
+       decision(str(INC / "INC-5" / "wykonanie.jsonl"), "Write"), "deny")
+expect("incidents_dir: backup chroniony", decision(str(INC / "INC-5" / "backup" / "k.json"), "Write"), "deny")
+r = subprocess.run([BASH, PPCALL, "plan-new", "INC-5"], cwd=WORK, capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", env=os.environ)
+expect("incidents_dir: plan-new w stalym katalogu", (INC / "INC-5" / "plan.md").exists(), True)
+expect("incidents_dir: wzgledna sciezka zgloszona", len(C.config_problems({**C.DEFAULT_CONFIG, "incidents_dir": "zgl"})), 1)
+cfg["incidents_dir"] = "wzgledny"
+C.save_config(cfg)
+expect("incidents_dir: wzgledna sciezka liczona od katalogu sesji", C.incident_dir(WORK, "INC-5"), WORK / "wzgledny" / "INC-5")
+cfg["incidents_dir"] = ""
+C.save_config(cfg)
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

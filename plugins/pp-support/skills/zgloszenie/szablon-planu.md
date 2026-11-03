@@ -24,6 +24,15 @@
 <!-- Co może pójść źle. Kogo dotknie wykonanie (klienci, inne automaty, dane).
      Czy krok jest odwracalny. Czy wymaga okna serwisowego lub uprzedzenia właściciela. -->
 
+## Analiza wpływu
+<!-- Wymagana przy kroku flow-patch. Które przypadki zmienią wynik, a które nie, z liczbami z danych
+     (np. "zmienia 54 korekty korekt, 332 pojedyncze korekty dają identyczny wynik"). Inne plany: usuń sekcję
+     albo opisz krótko. -->
+
+## Test
+<!-- Wymagana przy kroku flow-patch. Wynik testu tej samej zmiany na kopii flow w środowisku testowym
+     albo uzasadnienie, dlaczego test nie jest możliwy. -->
+
 ## Plan wycofania
 <!-- Jak cofnąć każdy krok. Jeśli krok jest nieodwracalny, napisz to wprost i wyjaśnij, czym to grozi. -->
 
@@ -34,7 +43,16 @@
 <!-- Tylko operacje zmieniające. Odczyty i weryfikacje nie są krokami.
      typ "http": metoda POST, PATCH albo PUT, url na dozwolonym hoście, opcjonalnie body.
      typ "cli": argv jako lista, program pac albo az.
-     DELETE, usuwanie, sekrety i zmiany definicji flow na produkcji są odrzucane przez walidację. -->
+     typ "flow-patch": zmiana wartości tekstowych pod inputs/parameters albo inputs/body istniejących akcji jednego flow, najwyżej 5 zmian:
+       {"nr": 1, "opis": "...", "typ": "flow-patch",
+        "srodowisko": "https://<nazwa>.crm4.dynamics.com", "workflowid": "<GUID>",
+        "oczekiwany_modifiedon": "<modifiedon odczytany z workflows, np. 2026-08-25T09:52:49Z>",
+        "zmiany": [{"sciezka": ["properties", "definition", "actions", "<akcja>", "inputs", "parameters", "<klucz>"],
+                    "bylo": "<dokładna aktualna wartość>", "ma_byc": "<nowa wartość>"}]}
+       Ścieżka to lista kluczy po nazwach akcji, z elementami else, cases/<przypadek> i default dla
+       zagnieżdżonych akcji. Zabronione: wyzwalacze, runAfter, type, expression, uri, method, headers,
+       host, authentication, path, pathTemplate, function i klucze połączeń. Krok działa tylko w środowiskach z ustawienia flow_patch_dataverse_urls.
+     DELETE, usuwanie, sekrety i inne zmiany definicji flow są odrzucane przez walidację. -->
 ```json
 []
 ```
