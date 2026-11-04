@@ -1743,6 +1743,26 @@ with contextlib.redirect_stdout(io.StringIO()):
 expect("przeniesienie: pusty katalog backup/ usuniety", LEG.exists(), False)
 expect("przeniesienie: niepoprawny identyfikator ignorowany", P.migrate_legacy_backups("../x"), [])
 
+print("   nazwy kopii unikalne w calym stanie (wycofanie z innego zgloszenia)")
+_now = C.now
+C.now = lambda: _now().replace(year=2030, month=1, day=1, hour=0, minute=0, second=0)
+try:
+    STEP_U = {"workflowid": WF3}
+    first = P.backup_path("UNQ-1", STEP_U)
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.write_text('{"a": 1}', encoding="utf-8")
+    second = P.backup_path("UNQ-2", STEP_U)
+finally:
+    C.now = _now
+expect("kopie: ta sama sekunda w innym zgloszeniu -> inna nazwa", first.name != second.name, True)
+twin = C.backup_dir("UNQ-3") / first.name  # kopia sprzed poprawki o tej samej nazwie w innym zgloszeniu
+twin.parent.mkdir(parents=True, exist_ok=True)
+twin.write_text('{"a": 2}', encoding="utf-8")
+expect("kopie: dwie kopie o tej samej nazwie -> wybor po skrocie z planu",
+       C.step_file_path(WORK / "zgloszenia/UNQ-9", f"backup/{first.name}", C.file_sha256(twin)), twin)
+expect("kopie: dwie kopie o tej samej nazwie bez pasujacego skrotu -> brak",
+       C.step_file_path(WORK / "zgloszenia/UNQ-9", f"backup/{first.name}", "0" * 64).is_file(), False)
+
 print("   Read i Grep na stanie (zawsze, takze poza rozmowa dyzurna)")
 S31 = "sesja-31-uspiona"
 for label, tool, tin, cwd, want in [
@@ -1847,12 +1867,15 @@ try:
         ("-Path:$HOME", "Get-ChildItem -Path:$HOME -Recurse", "powershell", True),
         ("grep --directories=recurse", "grep --directories=recurse pw ~/.claude", "bash", True),
         ("grep -d recurse", "grep -d recurse pw ~", "bash", True),
-        ("find /c", "find /c -name x", "bash", True),
-        ("grep -r C:", "grep -r x C:", "bash", True),
         ("ls -ltr ~ w bashu", "ls -ltr ~", "bash", False),
         ("ls -R ~ w bashu", "ls -R ~", "bash", True),
         ("cd do projektu i grep -r", "cd ~/projekt && grep -r pw .", "bash", False),
-    ]:
+        ("bash -c z grep -r", 'bash -c "grep -r pw ~"', "bash", True),
+        ("pwsh -Command z gci -Recurse", 'pwsh -Command "Get-ChildItem ~ -Recurse"', "powershell", True),
+        ("powershell -EncodedCommand", "powershell -EncodedCommand ZABpAHIA", "powershell", True),
+        ("bash -c bez rekurencji", 'bash -c "ls ~"', "bash", False),
+    ] + ([("find /c", "find /c -name x", "bash", True),  # dysk w Git Bash i cmd (tylko Windows)
+          ("grep -r C:", "grep -r x C:", "bash", True)] if os.name == "nt" else []):
         toks = G.tokenize(G.split_segments(cmd, dialect)[-1].strip(), dialect)
         expect(f"rekurencja po przegladzie: {label}", G.recursive_reaches_state(toks, str(WORK), dialect, cmd), want)
 finally:
@@ -1892,6 +1915,22 @@ if linked:
         subprocess.run(["cmd", "/c", "rmdir", str(LINK_DIR / "backup")], capture_output=True)
     else:
         (LINK_DIR / "backup").unlink()
+    VICTIM2 = TMP / "cudze-zgloszenie"
+    (VICTIM2 / "backup").mkdir(parents=True, exist_ok=True)
+    (VICTIM2 / "backup" / "id_rsa").write_text("tajne", encoding="utf-8")
+    LINK_INC = WORK / "zgloszenia/MIG-4"
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(LINK_INC), str(VICTIM2)], capture_output=True)
+    else:
+        os.symlink(VICTIM2, LINK_INC)
+    with contextlib.redirect_stdout(io.StringIO()):
+        P.migrate_legacy_backups("MIG-4")
+    expect("migracja: dowiazanie katalogu zgloszenia pominiete",
+           ((VICTIM2 / "backup" / "id_rsa").exists(), (C.backup_dir("MIG-4") / "id_rsa").exists()), (True, False))
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "rmdir", str(LINK_INC)], capture_output=True)
+    else:
+        LINK_INC.unlink()
 else:
     print("  (pominieto test dowiazania: brak uprawnien do utworzenia)")
 

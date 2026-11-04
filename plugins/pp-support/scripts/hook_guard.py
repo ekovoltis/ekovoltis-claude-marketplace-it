@@ -119,8 +119,10 @@ HOME_VAR_RE = re.compile(r"^(~|\$\{?HOME\}?|\$\{?env:(HOME|USERPROFILE)\}?|%USER
 LS_BASH_FLAG_RE = re.compile(r"^(-[a-zA-Z]*R[a-zA-Z]*|--recursive)$")  # w bashu ls -r to odwrocona kolejnosc
 # Nakladki uruchamiajace inne polecenie: command grep -r ..., timeout 10 find ~, cmd /c dir /s ...
 WRAPPERS = {"command", "builtin", "env", "timeout", "nice", "nohup", "sudo", "xargs", "stdbuf", "time", "exec",
-            "ionice", "chrt", "doas", "busybox", "winpty"}
+            "ionice", "chrt", "doas", "busybox", "winpty", "wsl"}
 CD_PROGS = {"cd", "pushd", "chdir", "set-location", "sl", "push-location"}
+SHELL_PROGS = {"bash", "sh", "zsh", "dash", "ksh", "pwsh", "powershell"}
+SHELL_CODE_FLAGS = {"-c"}
 
 
 def _prog(token: str) -> str:
@@ -205,14 +207,38 @@ def _covers_state(path: str, cwd: str) -> bool:
     if not re.match(r"^([a-z]:)?/", norm):
         norm = _norm_path(os.path.join(cwd, p))
     norm = _norm_path(os.path.normpath(norm)).rstrip("/") or "/"
-    state = _norm_path(str(C.state_base())).rstrip("/")
-    return state == norm or state.startswith(norm.rstrip("/") + "/") or norm.startswith(state + "/")
+    return any(state == norm or state.startswith(norm.rstrip("/") + "/") or norm.startswith(state + "/")
+               for state in _state_forms())
+
+
+def _state_forms() -> set[str]:
+    """Sciezka stanu tak, jak podana, i po rozwinieciu (nazwy 8.3 jak RUNNER~1, dowiazania)."""
+    base = C.state_base()
+    forms = {_norm_path(str(base)).rstrip("/")}
+    try:
+        forms.add(_norm_path(str(Path(base).expanduser().resolve())).rstrip("/"))
+    except (OSError, ValueError):
+        pass
+    return forms
 
 
 def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", full: str | None = None) -> bool:
     """Rekurencyjne polecenie, ktore obejmuje katalog stanu (dom, .claude, dysk) albo startuje z takiego cwd.
     full: cale polecenie; cd/Set-Location w innym segmencie zmienia cwd, xargs bierze sciezki z innego segmentu."""
     tokens, xargs, cmd = _unwrap(tokens)
+    if tokens and _prog(tokens[0]) in SHELL_PROGS:  # bash -c "...", pwsh -Command "..."
+        args = [t.lower() for t in tokens[1:]]
+        ps = _prog(tokens[0]) in ("pwsh", "powershell")
+        if ps and any(a == "-ec" or (len(a) >= 2 and "-encodedcommand".startswith(a)) for a in args):
+            return True  # kodu zakodowanego nie da sie sprawdzic: w rozmowie dyzurnej odmowa
+        for i, a in enumerate(args):
+            code_flag = (a in SHELL_CODE_FLAGS or (len(a) >= 2 and "-command".startswith(a))) if ps                 else bool(re.fullmatch(r"-[a-z]*c", a))
+            if code_flag and i + 1 < len(tokens) - 1:
+                inner = " ".join(tokens[i + 2:])
+                inner_dialect = "powershell" if _prog(tokens[0]) in ("pwsh", "powershell") else "bash"
+                return any(recursive_reaches_state(tokenize(seg.strip(), inner_dialect), cwd, inner_dialect, inner)
+                           for seg in split_segments(inner, inner_dialect))
+        return False
     if not _is_recursive(tokens, "cmd" if cmd else dialect):
         return False
     if _covers_state(".", cwd):

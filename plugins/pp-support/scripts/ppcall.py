@@ -837,13 +837,15 @@ def exec_flow_patch(incident_id: str, step: dict, entry: dict) -> bool:
 
 def backup_path(incident_id: str, step: dict) -> Path:
     """Nowy plik kopii w stanie (<stan>/kopie/<ID>/); przy dwoch zapisach w tej samej sekundzie z numerem,
-    nigdy nadpisanie. W planie kopia wystepuje jako backup/<plik>."""
+    nigdy nadpisanie. Nazwa jest unikalna w calym stanie (wszystkie zgloszenia), bo odnosnik backup/<plik>
+    w planie wycofania moze wskazywac kopie innego zgloszenia."""
     folder = C.backup_dir(incident_id)
+    root = folder.parent
     base = f"{step['workflowid']}-{C.now().strftime('%Y%m%dT%H%M%SZ')}"
-    path, n = folder / f"{base}.json", 1
-    while path.exists():
-        path, n = folder / f"{base}-{n}.json", n + 1
-    return path
+    name, n = f"{base}.json", 1
+    while any(root.glob(f"*/{name}")):
+        name, n = f"{base}-{n}.json", n + 1
+    return folder / name
 
 
 def write_backup(step: dict, backup: Path, before: dict) -> str:
@@ -867,17 +869,23 @@ def migrate_legacy_backups(incident_id: str) -> list[str]:
     legacy = C.legacy_backup_dir(folder)
     if not legacy.is_dir():
         return []
-    try:  # dowiazanie albo junction w miejscu backup/ wskazuje cudze pliki: nie przenosimy
-        if legacy.is_symlink() or getattr(legacy, "is_junction", lambda: False)() \
-                or not legacy.resolve().is_relative_to(folder.resolve()):
-            out(f"Uwaga: {legacy} jest dowiazaniem, kopii nie przeniesiono.")
+
+    def linked(p: Path) -> bool:
+        return p.is_symlink() or getattr(p, "is_junction", lambda: False)()
+
+    try:  # dowiazanie albo junction (katalogu zgloszenia albo backup/) wskazuje cudze pliki: nie przenosimy
+        root = C.incidents_root(Path.cwd()).resolve()
+        legacy_real = legacy.resolve()
+        if (linked(folder) or linked(legacy) or folder.resolve() != root / folder.name
+                or legacy_real != root / folder.name / legacy.name):
+            out(f"Uwaga: {legacy} albo katalog zgloszenia jest dowiazaniem, kopii nie przeniesiono.")
             return [legacy.name]
     except OSError:
         return [legacy.name]
     left = []
     for old in sorted(legacy.iterdir()):
         try:
-            if old.is_symlink() or not old.is_file():
+            if old.is_symlink() or not old.is_file() or old.resolve().parent != legacy_real:
                 left.append(old.name)
                 continue
             data = old.read_bytes()
@@ -924,7 +932,7 @@ def migrate_all_legacy_backups() -> None:
 def load_new_definition(step: dict, folder: Path) -> tuple[dict | None, bytes, str | None]:
     """Plik nowej definicji czytany raz: skrot liczony z tych samych bajtow, ktore ida do zapisu.
     Kopia (backup/<plik>) jest czytana ze stanu."""
-    path = C.step_file_path(folder, step["plik"])
+    path = C.step_file_path(folder, step["plik"], str(step.get("sha256", "")))
     try:
         raw = path.read_bytes()
     except OSError as e:
