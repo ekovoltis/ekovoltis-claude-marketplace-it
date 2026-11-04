@@ -234,6 +234,8 @@ PS_FLAG_ALIASES = {"-nop", "-noni", "-nol", "-l", "-?", "/?", "-h"}
 def _ps_option_name(arg: str) -> str:
     """Pelna nazwa opcji -WorkingDirectory dla jej skrotow (-wd, -work, -WorkingDir:...)."""
     name = arg.lower().split(":", 1)[0]
+    if name.startswith("/"):
+        name = "-" + name[1:]
     if name == "-wd" or (len(name) >= 3 and "-workingdirectory".startswith(name) and name != "-w"):
         return "-workingdirectory"
     return name
@@ -276,7 +278,10 @@ def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", 
                     return True  # kod ze stdin albo brak kodu: nie da sie sprawdzic
                 start = i + 2
                 break
-            if not a.startswith(("-", "/")) or a == "-":
+            if not ps and (re.fullmatch(r"[-+][a-zA-Z]*[oO]", a) or a in ("--rcfile", "--init-file")):
+                i += 2  # bash -o/+o/-O nazwa, --rcfile plik: opcja z wartoscia
+                continue
+            if not a.startswith(("-", "/", "+")) or a == "-":
                 if a == "-":
                     return True  # skrypt ze stdin
                 start = i + 1  # powershell 5.1: reszta to polecenie; bash: skrypt (sprawdzany jak polecenie)
@@ -296,9 +301,6 @@ def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", 
                     continue
             elif re.fullmatch(r"-[a-z]*s[a-z]*", a):
                 return True  # bash -s: kod ze stdin
-            elif a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
-                i += 2
-                continue
             i += 1
         if start is None:
             # sama powloka: kod ze stdin, gdy polecenie podaje go potokiem albo przekierowaniem

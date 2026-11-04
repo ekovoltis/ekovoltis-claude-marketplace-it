@@ -1890,6 +1890,10 @@ try:
         ("bash -s < plik", "bash -s < cmd.txt", "bash", True),
         ("bash -o pipefail -c", 'bash -o pipefail -c "grep -r x ~"', "bash", True),
         ("bash skrypt z -c w argumentach", "bash skrypt.sh -c x", "bash", False),
+        ("bash +o pipefail -c", 'bash +o pipefail -c "grep -r x ~"', "bash", True),
+        ("bash -eo pipefail -c", 'bash -eo pipefail -c "grep -r x ~"', "bash", True),
+        ("powershell /wd ~", 'powershell /wd ~ /c "gci -r ."', "powershell", True),
+        ("powershell /WorkingDirectory:~", 'powershell /WorkingDirectory:~ -Command "gci -r ."', "powershell", True),
     ] + ([("find /c", "find /c -name x", "bash", True),  # dysk w Git Bash i cmd (tylko Windows)
           ("grep -r C:", "grep -r x C:", "bash", True)] if os.name == "nt" else []):
         toks = G.tokenize(G.split_segments(cmd, dialect)[-1].strip(), dialect)
