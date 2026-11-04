@@ -1,5 +1,10 @@
 # Zmiany w pp-support
 
+## 1.2.4 (2026-11-04)
+
+- Strażnik, rozmowa dyżurna: rekurencja w PowerShell uruchomionym bez `-Command` (`powershell Get-ChildItem ~ -Recurse`; Windows PowerShell 5.1 traktuje argumenty jak polecenie) jest blokowana. Opcje `pwsh`/`powershell` są rozpoznawane po prefiksie, jak w PowerShell (`-Execution Bypass`, `-ExecutionPolicy:Bypass`, `-cwa`, `/command`), a nieznana opcja przed poleceniem kończy się odmową zamiast zgadywania, gdzie polecenie się zaczyna. `-File skrypt.ps1` nie jest traktowane jak polecenie.
+- Argumenty powłoki czytane po kolei: flaga `-c`/`-Command` liczy się tylko przed pierwszym argumentem pozycyjnym (`bash skrypt.sh -c x` to skrypt). `-WorkingDirectory`/`-wd` zmienia katalog, względem którego sprawdzana jest rekurencja. Kod ze stdin (`-File -`, `-Command -`, `bash -s`, `… | bash`) i brak kodu po `-c` kończą się odmową, bo nie da się ich sprawdzić. Opcje bash z `+` (`+o pipefail`) i opcje PowerShell zapisane przez `/` (`/wd`, `/WorkingDirectory:`) są rozpoznawane.
+
 ## 1.2.3 (2026-11-04)
 
 - Nazwy kopii definicji są unikalne w całym stanie, a nie tylko w zgłoszeniu. Dwie kopie tego samego flow z różnych zgłoszeń zapisane w tej samej sekundzie miały tę samą nazwę, przez co odnośnik `backup/<plik>` w planie wycofania z innego zgłoszenia był niejednoznaczny i nie działał. Przy kilku kopiach o tej samej nazwie (sprzed poprawki) wybierana jest jedyna o skrócie z planu.

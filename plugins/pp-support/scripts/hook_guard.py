@@ -222,6 +222,37 @@ def _state_forms() -> set[str]:
     return forms
 
 
+PS_VALUE_OPTIONS = ("-executionpolicy", "-windowstyle", "-workingdirectory", "-outputformat", "-inputformat",
+                    "-version", "-configurationname", "-configurationfile", "-psconsolefile", "-settingsfile",
+                    "-custompipename")
+PS_VALUE_ALIASES = {"-ep", "-ex", "-wd", "-of", "-if", "-w", "-v", "-o"}
+PS_FLAG_OPTIONS = ("-noprofile", "-nologo", "-noninteractive", "-noexit", "-sta", "-mta", "-interactive",
+                   "-login", "-noprofileloadtime", "-help")
+PS_FLAG_ALIASES = {"-nop", "-noni", "-nol", "-l", "-?", "/?", "-h"}
+
+
+def _ps_option_name(arg: str) -> str:
+    """Pelna nazwa opcji -WorkingDirectory dla jej skrotow (-wd, -work, -WorkingDir:...)."""
+    name = arg.lower().split(":", 1)[0]
+    if name.startswith("/"):
+        name = "-" + name[1:]
+    if name == "-wd" or (len(name) >= 3 and "-workingdirectory".startswith(name) and name != "-w"):
+        return "-workingdirectory"
+    return name
+
+
+def _ps_option(arg: str) -> str | None:
+    """Rodzaj opcji pwsh/powershell (skroty jak w PowerShell): 'value', 'flag', 'file' albo None (nieznana)."""
+    name = arg.lower().split(":", 1)[0].replace("/", "-", 1) if arg.startswith("/") else arg.lower().split(":", 1)[0]
+    if name in ("-f", "-file") or (len(name) >= 3 and "-file".startswith(name)):
+        return "file"
+    if name in PS_VALUE_ALIASES or (len(name) >= 3 and any(o.startswith(name) for o in PS_VALUE_OPTIONS)):
+        return "value"
+    if name in PS_FLAG_ALIASES or (len(name) >= 3 and any(o.startswith(name) for o in PS_FLAG_OPTIONS)):
+        return "flag"
+    return None
+
+
 def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", full: str | None = None) -> bool:
     """Rekurencyjne polecenie, ktore obejmuje katalog stanu (dom, .claude, dysk) albo startuje z takiego cwd.
     full: cale polecenie; cd/Set-Location w innym segmencie zmienia cwd, xargs bierze sciezki z innego segmentu."""
@@ -231,14 +262,57 @@ def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", 
         ps = _prog(tokens[0]) in ("pwsh", "powershell")
         if ps and any(a == "-ec" or (len(a) >= 2 and "-encodedcommand".startswith(a)) for a in args):
             return True  # kodu zakodowanego nie da sie sprawdzic: w rozmowie dyzurnej odmowa
-        for i, a in enumerate(args):
-            code_flag = (a in SHELL_CODE_FLAGS or (len(a) >= 2 and "-command".startswith(a))) if ps                 else bool(re.fullmatch(r"-[a-z]*c", a))
-            if code_flag and i + 1 < len(tokens) - 1:
-                inner = " ".join(tokens[i + 2:])
-                inner_dialect = "powershell" if _prog(tokens[0]) in ("pwsh", "powershell") else "bash"
-                return any(recursive_reaches_state(tokenize(seg.strip(), inner_dialect), cwd, inner_dialect, inner)
-                           for seg in split_segments(inner, inner_dialect))
-        return False
+        inner_dialect = "powershell" if ps else "bash"
+        def code_flag(a: str) -> bool:
+            if ps:
+                return a in ("/c", "/command", "--command", "-cwa") or (len(a) >= 2 and (
+                    "-command".startswith(a) or "-commandwithargs".startswith(a)))
+            return bool(re.fullmatch(r"-[a-z]*c", a))
+
+        # Argumenty po kolei: opcje, potem flaga kodu (-c/-Command) albo pierwszy argument pozycyjny.
+        start, wd, i = None, None, 0
+        while i < len(args):
+            a = args[i]
+            if code_flag(a):
+                if i + 1 >= len(args) or args[i + 1] == "-":
+                    return True  # kod ze stdin albo brak kodu: nie da sie sprawdzic
+                start = i + 2
+                break
+            if not ps and re.fullmatch(r"-[a-zA-Z]+", a) and ("s" in a or ("c" in a and "o" in a.lower())):
+                return True  # bash -s / -so ...: kod ze stdin; -co: nie zgadujemy, ktory argument jest kodem
+            if not ps and (re.fullmatch(r"[-+][a-zA-Z]*[oO]", a) or a in ("--rcfile", "--init-file")):
+                i += 2  # bash -o/+o/-O nazwa, --rcfile plik: opcja z wartoscia
+                continue
+            if not a.startswith(("-", "/", "+")) or a == "-":
+                if a == "-":
+                    return True  # skrypt ze stdin
+                start = i + 1  # powershell 5.1: reszta to polecenie; bash: skrypt (sprawdzany jak polecenie)
+                break
+            if ps:
+                kind = _ps_option(a)
+                if kind == "file":
+                    value = a.split(":", 1)[1] if ":" in a else (args[i + 1] if i + 1 < len(args) else "-")
+                    return value == "-"  # -File skrypt.ps1 to skrypt; -File - czyta kod ze stdin
+                if kind is None:
+                    return True  # nieznana opcja: nie zgadujemy, gdzie zaczyna sie polecenie
+                if kind == "value":
+                    value = a.split(":", 1)[1] if ":" in a else (tokens[i + 2] if i + 2 < len(tokens) else "")
+                    if _ps_option_name(a) in ("-workingdirectory", "-wd"):
+                        wd = value
+                    i += 1 if ":" in a else 2
+                    continue
+            i += 1
+        if start is None:
+            # sama powloka: kod ze stdin, gdy polecenie podaje go potokiem albo przekierowaniem
+            return bool(full and re.search(r"[|<]", full))
+        if start >= len(tokens):
+            return True
+        if wd:
+            cwd = os.path.join(cwd, HOME_VAR_RE.sub(lambda _: str(Path.home()).replace("\\", "/"),
+                                                   wd.replace("\\", "/")))
+        inner = " ".join(tokens[start:])
+        return any(recursive_reaches_state(tokenize(seg.strip(), inner_dialect), cwd, inner_dialect, inner)
+                   for seg in split_segments(inner, inner_dialect))
     if not _is_recursive(tokens, "cmd" if cmd else dialect):
         return False
     if _covers_state(".", cwd):
