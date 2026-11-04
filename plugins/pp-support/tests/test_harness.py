@@ -511,8 +511,9 @@ expect("flow-patch: If-Match z etagiem", FAKE.patches[0]["if_match"] if FAKE.pat
 after = json.loads(FAKE.clientdata)
 expect("flow-patch: diff po zapisie = 2 sciezki", sorted(C.leaf_diff(DEFINITION, after)), sorted([tuple(P1), tuple(P2)]))
 expect("flow-patch: nowa wartosc", C.get_at(after, P1), NEW)
-backups = list((WORK / "zgloszenia/FP-1/backup").glob(f"{WF}-*.json"))
-expect("flow-patch: kopia zapisana", len(backups), 1)
+backups = list(C.backup_dir("FP-1").glob(f"{WF}-*.json"))
+expect("flow-patch: kopia zapisana w stanie", len(backups), 1)
+expect("flow-patch: brak kopii w katalogu zgloszenia", (WORK / "zgloszenia/FP-1/backup").exists(), False)
 expect("flow-patch: kopia = definicja sprzed zmiany",
        C.leaf_diff(DEFINITION, json.loads(backups[0].read_text(encoding="utf-8"))) if backups else None, [])
 expect("flow-patch: kopia tylko do odczytu", bool(backups) and not os.stat(backups[0]).st_mode & _stat.S_IWRITE, True)
@@ -1432,7 +1433,7 @@ write_def("FD-1", NEWDEF)
 expect("flow-definition: exec", run_exec("FD-1"), None)
 expect("flow-definition: If-Match", FD.patches[0]["if_match"] if FD.patches else None, 'W/"100"')
 expect("flow-definition: zapisana definicja = plik", C.leaf_diff(NEWDEF, json.loads(FD.clientdata)), [])
-backups = sorted((WORK / "zgloszenia/FD-1/backup").glob(f"{WF3}-*.json"))
+backups = sorted(C.backup_dir("FD-1").glob(f"{WF3}-*.json"))
 expect("flow-definition: kopia", len(backups), 1)
 entry = json.loads((WORK / "zgloszenia/FD-1/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()[-1])
 expect("flow-definition: dziennik", (entry["sukces"], bool(entry.get("kopia_sha256")), len(entry.get("zmiany_akcji", []))),
@@ -1451,10 +1452,9 @@ expect("usuniecie akcji Http: exec", run_exec("FD-2"), None)
 entry = json.loads((WORK / "zgloszenia/FD-2/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()[-1])
 kopia = Path(entry["kopia"])
 rel = f"backup/{kopia.name}"
+expect("wycofanie z kopii: kopia w stanie", kopia.parent == C.backup_dir("FD-2"), True)
 text = fd_plan("FD-3", rel, entry["kopia_sha256"], modifiedon=entry["modifiedon_po"])
-(WORK / "zgloszenia/FD-3/backup").mkdir(parents=True, exist_ok=True)
-shutil.copy(kopia, WORK / "zgloszenia/FD-3" / rel)
-code, txt = plan_check(text, "FD-3")
+code, txt = plan_check(text, "FD-3")  # kopia z innego zgloszenia (FD-2), jednoznaczna nazwa
 expect("wycofanie z kopii: plan-check", (code, "dodana: Send_HTTP (Http)" in txt), (None, True))
 accept("FD-3", text)
 expect("wycofanie z kopii: exec", run_exec("FD-3"), None)
@@ -1688,6 +1688,228 @@ for label, url, needle in [("Graph 403 na bibliotece", GSITE + ":/drive/root:/Ro
     expect(f"SharePoint: {label}: bez tokenu", SECRET_TOKEN in text_out, False)
 expect("SharePoint: 403 z Dataverse bez uwagi o SharePoint", P.access_hint(f"{DV}/api/data/v9.2/x", 403), None)
 expect("SharePoint: 401 z Graph poza witrynami bez uwagi", P.access_hint("https://graph.microsoft.com/v1.0/me", 401), None)
+
+print("31. 1.2.2: kopie definicji w stanie, Read i Grep na stanie, rekurencja od domu, az w kroku cli")
+import stat as _stat31  # noqa: E402
+cfg["flow_definition_dataverse_urls"] = [DV]
+C.save_config(cfg)
+KOPIA = sorted(C.backup_dir("FD-1").glob(f"{WF3}-*.json"))[0]
+SHA_K = C.file_sha256(KOPIA)
+expect("kopie: odnosnik backup/ rozwiazany do stanu",
+       C.step_file_path(WORK / "zgloszenia/FD-1", f"backup/{KOPIA.name}"), KOPIA)
+expect("kopie: kopia innego zgloszenia po jednoznacznej nazwie",
+       C.step_file_path(WORK / "zgloszenia/FD-9", f"backup/{KOPIA.name}"), KOPIA)
+text = fd_plan("FD-5", f"backup/{KOPIA.name}", SHA_K)
+(WORK / "zgloszenia/FD-5").mkdir(parents=True, exist_ok=True)
+(WORK / "zgloszenia/FD-5/plan.md").write_text(text, encoding="utf-8")
+expect("kopie: plan z kopia w stanie przechodzi walidacje hooka i ppcall",
+       C.check_plan(text, WORK / "zgloszenia/FD-5")[0], [])
+accept("FD-5", text)
+expect("kopie: hook znajduje kopie w stanie i pyta o exec", decision(f"{Q} exec FD-5 1"), "ask")
+bad_text = fd_plan("FD-5", f"backup/{KOPIA.name}", "0" * 64)
+(WORK / "zgloszenia/FD-5/plan.md").write_text(bad_text, encoding="utf-8")
+expect("kopie: zly skrot kopii -> hook odmawia", decision(f"{Q} exec FD-5 1"), "deny")
+expect("kopie: brak kopii -> blad walidacji",
+       any("brak pliku" in e for e in C.check_plan(fd_plan("FD-5", f"backup/{WF3}-20200101T000000Z.json", SHA_K),
+                                                   WORK / "zgloszenia/FD-5")[0]), True)
+
+print("   przeniesienie kopii sprzed 1.2.2")
+LEG = WORK / "zgloszenia/FD-6/backup"
+LEG.mkdir(parents=True, exist_ok=True)
+leg1 = LEG / f"{WF3}-20261101T100000Z.json"
+leg1.write_text('{"properties": {"definition": {"actions": {}}}}', encoding="utf-8")
+os.chmod(leg1, _stat31.S_IREAD)
+sha_leg = C.file_sha256(leg1)
+expect("przejsciowo: odnosnik wskazuje stara kopie, dopoki nie przeniesiona",
+       C.step_file_path(WORK / "zgloszenia/FD-6", f"backup/{leg1.name}"), leg1)
+expect("przejsciowo: Grep po zgloszeniach ze stara kopia zablokowany",
+       guard_in("sesja-31-uspiona", "Grep", {"pattern": "password", "path": str(WORK / "zgloszenia")}, WORK), "deny")
+leg2 = LEG / f"{WF3}-20261101T110000Z.json"
+leg2.write_text('{"a": 1}', encoding="utf-8")
+C.backup_dir("FD-6").mkdir(parents=True, exist_ok=True)
+(C.backup_dir("FD-6") / leg2.name).write_text('{"a": 2}', encoding="utf-8")  # konflikt nazwy
+with contextlib.redirect_stdout(io.StringIO()):
+    left = P.migrate_legacy_backups("FD-6")
+moved = C.backup_dir("FD-6") / leg1.name
+expect("przeniesienie: kopia w stanie z tym samym skrotem", moved.is_file() and C.file_sha256(moved) == sha_leg, True)
+expect("przeniesienie: kopia w stanie tylko do odczytu", not os.stat(moved).st_mode & _stat31.S_IWRITE, True)
+expect("przeniesienie: oryginal usuniety", leg1.exists(), False)
+expect("przeniesienie: konflikt nazwy zostaje na miejscu", (left, leg2.exists()), ([leg2.name], True))
+expect("przeniesienie: po przeniesieniu odnosnik wskazuje stan",
+       C.step_file_path(WORK / "zgloszenia/FD-6", f"backup/{leg1.name}"), moved)
+leg2.unlink()
+with contextlib.redirect_stdout(io.StringIO()):
+    P.migrate_legacy_backups("FD-6")
+expect("przeniesienie: pusty katalog backup/ usuniety", LEG.exists(), False)
+expect("przeniesienie: niepoprawny identyfikator ignorowany", P.migrate_legacy_backups("../x"), [])
+
+print("   Read i Grep na stanie (zawsze, takze poza rozmowa dyzurna)")
+S31 = "sesja-31-uspiona"
+for label, tool, tin, cwd, want in [
+    ("Read kopii w stanie", "Read", {"file_path": str(KOPIA)}, OTHER, "deny"),
+    ("Read akceptacji", "Read", {"file_path": str(TMP / "state/akceptacje/FD-5.json")}, OTHER, "deny"),
+    ("Read rejestru kopii", "Read", {"file_path": str(TMP / "state/kopie.jsonl")}, OTHER, "deny"),
+    ("Read zwyklego pliku", "Read", {"file_path": str(WORK / "zgloszenia/FD-5/plan.md")}, OTHER, None),
+    ("Read wzgledny z wnetrza stanu", "Read", {"file_path": "kopie.jsonl"}, TMP / "state", "deny"),
+    ("Grep w kopiach", "Grep", {"pattern": "password", "path": str(C.backup_dir("FD-1"))}, OTHER, "deny"),
+    ("Grep od przodka stanu", "Grep", {"pattern": "password", "path": str(TMP)}, OTHER, "deny"),
+    ("Grep bez sciezki z cwd w stanie", "Grep", {"pattern": "password"}, TMP / "state", "deny"),
+    # inne sekcje zostawiaja stare katalogi backup/ w zgloszenia/, wiec Grep po calosci jest tu blokowany
+    ("Grep w zgloszeniu (kopie w stanie)", "Grep", {"pattern": "password", "path": str(WORK / "zgloszenia/FD-5")}, WORK, None),
+    ("Grep w projekcie", "Grep", {"pattern": "def ", "path": str(ROOT / "scripts")}, OTHER, None),
+]:
+    expect(f"narzedzia: {label}", guard_in(S31, tool, tin, cwd), want)
+
+print("   rekurencja od domu albo .claude w rozmowie dyzurnej")
+S31A = "sesja-31-dyzur"
+guard_in(S31A, "Skill", {"skill": "pp-support:zgloszenie"})
+for label, tool, cmd, cwd, want in [
+    ("grep -r od przodka stanu", "Bash", f'grep -r password "{TMP}"', WORK, "deny"),
+    ("grep -rn ze wzorcem", "Bash", f'grep -rn password "{TMP}"/st*', WORK, "deny"),
+    ("find od przodka stanu", "Bash", f'find "{TMP}" -name "*.json"', WORK, "deny"),
+    ("tar katalogu nad stanem", "Bash", f'tar czf x.tgz "{TMP}"', WORK, "deny"),
+    ("rg z cwd nad stanem", "Bash", "rg password", TMP, "deny"),
+    ("Get-ChildItem -Recurse", "PowerShell", f'Get-ChildItem "{TMP}" -Recurse | Select-String password', WORK, "deny"),
+    ("gci -r", "PowerShell", f'gci -r "{TMP}"', WORK, "deny"),
+    ("grep -r w projekcie", "Bash", "grep -r password zgloszenia/FD-5", WORK, None),
+    ("grep bez rekurencji", "Bash", f'grep password "{TMP}/x.txt"', WORK, None),
+    ("ls -la nad stanem", "Bash", f'ls -la "{TMP}"', WORK, None),
+]:
+    expect(f"rekurencja: {label}", guard_in(S31A, tool, {"command": cmd}, cwd), want)
+expect("rekurencja: poza rozmowa dyzurna bez blokady",
+       guard_in(S31, "Bash", {"command": f'grep -r password "{TMP}"'}, WORK), None)
+_saved_state = os.environ["PP_SUPPORT_STATE_DIR"]
+os.environ["PP_SUPPORT_STATE_DIR"] = str(Path.home() / ".claude" / C.STATE_DIR_NAME)
+try:
+    for label, cmd, dialect, want in [
+        ("grep -r ~", "grep -r password ~", "bash", True),
+        ("find $HOME", "find $HOME -name x", "bash", True),
+        ("rg ~/.claude", "rg --hidden password ~/.claude", "bash", True),
+        ("tar ~/.c*", "tar czf x.tgz ~/.c*", "bash", True),
+        ("gci $env:USERPROFILE\\.claude", "Get-ChildItem $env:USERPROFILE\\.claude -Recurse", "powershell", True),
+        ("Compress-Archive ~", "Compress-Archive -Path ~ -DestinationPath x.zip", "powershell", True),
+        ("grep -r ~/projekt", "grep -r password ~/projekt", "bash", False),
+        ("find ~/.claude/plugins", "find ~/.claude/plugins -name x", "bash", False),
+    ]:
+        expect(f"rekurencja od domu: {label}", G.recursive_reaches_state(G.tokenize(cmd, dialect), str(WORK)), want)
+finally:
+    os.environ["PP_SUPPORT_STATE_DIR"] = _saved_state
+
+print("   krok cli z az: tylko jawnie dozwolone polecenia")
+for argv, bad in [
+    (["az", "logic", "workflow", "update", "-g", "rg", "-n", "wf", "--definition", "d.json"], True),
+    (["az", "logic", "workflow", "create", "-g", "rg", "-n", "wf"], True),
+    (["az", "webapp", "config", "appsettings", "set", "-n", "x", "-g", "y", "--settings", "A=1"], True),
+    (["az", "resource", "update", "--ids", "x", "--set", "properties.state=Enabled"], True),
+    (["az", "role", "assignment", "create", "--role", "Owner"], True),
+    (["az", "--subscription", "s", "webapp", "restart", "-n", "x", "-g", "y"], True),
+    (["az", "webapp", "restart", "-n", "@plik", "-g", "y"], True),
+    (["az", "webapp", "restart", "--name=@plik", "-g", "y"], True),
+    (["az", "logic", "workflow", "enable", "-g", "rg", "-n", "wf"], False),
+    (["az", "logic", "workflow", "disable", "-g", "rg", "-n", "wf"], False),
+    (["az", "webapp", "restart", "-n", "x", "-g", "y"], False),
+    (["az", "functionapp", "restart", "-n", "x", "-g", "y"], False),
+    (["pac", "solution", "list"], False),
+]:
+    expect(f"krok cli: {' '.join(argv)}", bool(C.step_problems({"nr": 1, "opis": "x", "typ": "cli", "argv": argv}, 1)), bad)
+_http_step = ('"typ": "http", "metoda": "POST",\n   "url": "https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/'
+              'environments/env1/flows/abc/start?api-version=2016-11-01"')
+bad_plan = PLAN.replace(_http_step, '"typ": "cli", "argv": ["az", "logic", "workflow", "update", "-g", "rg", "-n", "wf", '
+                                    '"--definition", "d.json"]')
+expect("krok cli: plan z az update nie przechodzi plan-check", bad_plan != PLAN and bool(C.check_plan(bad_plan)[0]), True)
+cfg["flow_definition_dataverse_urls"] = []
+C.save_config(cfg)
+
+print("   po przegladzie 1.2.2: kopie we wzorcach, cd, nakladki, cmd.exe, dowiazania, dziennik")
+for label, cmd, want in [
+    ("cd ~/.claude i wzorzec na kopie", "cd ~/.claude && cat */kopie/*/*.json", "deny"),
+    ("dopisanie do rejestru kopii wzorcem", "cd ~/.claude && echo x >> */kopie.jsonl", "deny"),
+    ("Set-Location i wzorzec na kopie", "Set-Location ~/.claude; Get-Content */kopie/*/*", "deny"),
+    ("slowo kopie bez odniesienia do domu", "ls kopie/", None),
+]:
+    dialect_tool = "PowerShell" if cmd.startswith("Set-Location") else "Bash"
+    expect(f"kopie we wzorcach: {label}", guard_in(S31, dialect_tool, {"command": cmd}, WORK), want)
+_saved_state = os.environ["PP_SUPPORT_STATE_DIR"]
+os.environ["PP_SUPPORT_STATE_DIR"] = str(Path.home() / ".claude" / C.STATE_DIR_NAME)
+try:
+    for label, cmd, dialect, want in [
+        ("cd ~ && grep -rn .", "cd ~ && grep -rn pw .", "bash", True),
+        ("samo cd i grep -r", "cd; grep -r pw .", "bash", True),
+        ("Set-Location i gci -Recurse", "Set-Location ~\\.claude; Get-ChildItem -Recurse", "powershell", True),
+        ("command grep -r", "command grep -r pw ~", "bash", True),
+        ("timeout find", "timeout 10 find ~ -name x", "bash", True),
+        ("env grep -r", "env LC_ALL=C grep -r pw ~", "bash", True),
+        ("xargs grep -r", "echo ~ | xargs grep -r pw", "bash", True),
+        ("cmd /c z cudzyslowem", 'cmd /c "dir /s %USERPROFILE%\\.claude"', "bash", True),
+        ("cmd /c dir /s w PowerShell", "cmd /c dir /s %USERPROFILE%\\.claude", "powershell", True),
+        ("gci -Depth", "Get-ChildItem ~ -Depth 10", "powershell", True),
+        ("${env:USERPROFILE}", "Get-ChildItem -Path ${env:USERPROFILE} -Recurse", "powershell", True),
+        ("-Path:$HOME", "Get-ChildItem -Path:$HOME -Recurse", "powershell", True),
+        ("grep --directories=recurse", "grep --directories=recurse pw ~/.claude", "bash", True),
+        ("grep -d recurse", "grep -d recurse pw ~", "bash", True),
+        ("find /c", "find /c -name x", "bash", True),
+        ("grep -r C:", "grep -r x C:", "bash", True),
+        ("ls -ltr ~ w bashu", "ls -ltr ~", "bash", False),
+        ("ls -R ~ w bashu", "ls -R ~", "bash", True),
+        ("cd do projektu i grep -r", "cd ~/projekt && grep -r pw .", "bash", False),
+    ]:
+        toks = G.tokenize(G.split_segments(cmd, dialect)[-1].strip(), dialect)
+        expect(f"rekurencja po przegladzie: {label}", G.recursive_reaches_state(toks, str(WORK), dialect, cmd), want)
+finally:
+    os.environ["PP_SUPPORT_STATE_DIR"] = _saved_state
+for argv, bad in [
+    (["az", "webapp", "restart", "-n", "x&calc", "-g", "y"], True),
+    (["az", "webapp", "restart", "-n", "x", "-g", "y|more"], True),
+    (["az", "webapp", "restart", "-n", "%COMSPEC%", "-g", "y"], True),
+    (["az", "webapp", "restart", "-n", 'x" & calc & "', "-g", "y"], True),
+    (["az", "webapp", "restart", "--%", "-n", "x"], True),
+    (["pac", "org", "select", "--environment", "https://x.crm4.dynamics.com/"], False),
+]:
+    expect(f"krok cli (cmd.exe): {' '.join(argv)}",
+           bool(C.step_problems({"nr": 1, "opis": "x", "typ": "cli", "argv": argv}, 1)), bad)
+
+VICTIM = TMP / "cudzy-katalog"
+VICTIM.mkdir(exist_ok=True)
+(VICTIM / "id_rsa").write_text("tajne", encoding="utf-8")
+LINK_DIR = WORK / "zgloszenia/MIG-2"
+LINK_DIR.mkdir(parents=True, exist_ok=True)
+linked = False
+try:
+    if os.name == "nt":
+        linked = subprocess.run(["cmd", "/c", "mklink", "/J", str(LINK_DIR / "backup"), str(VICTIM)],
+                                capture_output=True).returncode == 0
+    else:
+        os.symlink(VICTIM, LINK_DIR / "backup")
+        linked = True
+except OSError:
+    linked = False
+if linked:
+    with contextlib.redirect_stdout(io.StringIO()):
+        P.migrate_legacy_backups("MIG-2")
+    expect("migracja: dowiazanie backup/ pominiete", ((VICTIM / "id_rsa").exists(),
+                                                      (C.backup_dir("MIG-2") / "id_rsa").exists()), (True, False))
+    if os.name == "nt":
+        subprocess.run(["cmd", "/c", "rmdir", str(LINK_DIR / "backup")], capture_output=True)
+    else:
+        (LINK_DIR / "backup").unlink()
+else:
+    print("  (pominieto test dowiazania: brak uprawnien do utworzenia)")
+
+ALL1 = WORK / "zgloszenia/MIG-3/backup"
+ALL1.mkdir(parents=True, exist_ok=True)
+(ALL1 / f"{WF3}-20261101T120000Z.json").write_text("{}", encoding="utf-8")
+with contextlib.redirect_stdout(io.StringIO()):
+    P.migrate_all_legacy_backups()
+expect("migracja: wszystkie zgloszenia, nie tylko biezace", (C.backup_dir("MIG-3") / f"{WF3}-20261101T120000Z.json").is_file(), True)
+
+audit_before = (TMP / "state/audyt.jsonl").read_text(encoding="utf-8").count('"narzedzie": "Read"')
+guard_in(S31, "Read", {"file_path": str(KOPIA)}, OTHER)
+expect("dziennik: odmowa Read zapisana",
+       (TMP / "state/audyt.jsonl").read_text(encoding="utf-8").count('"narzedzie": "Read"'), audit_before + 1)
+last_fd = json.loads((WORK / "zgloszenia/FD-1/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+expect("dziennik wykonania: odnosnik kopii do planu",
+       str(last_fd.get("kopia_plan", "")).startswith("backup/") and Path(last_fd["kopia"]).name == last_fd["kopia_plan"][7:],
+       True)
 
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")

@@ -720,6 +720,7 @@ def cmd_plan_check(args: list[str]) -> None:
     pp = C.plan_path(Path.cwd(), args[0])
     if not pp.exists():
         fail(f"Brak {pp}")
+    migrate_all_legacy_backups()
     text = pp.read_text(encoding="utf-8")
     errs, steps = C.check_plan(text, pp.parent)
     if errs:
@@ -791,8 +792,9 @@ def exec_flow_patch(incident_id: str, step: dict, entry: dict) -> bool:
         out("Flow nie zgadza sie z zaakceptowanym planem, nic nie zapisano:\n  - " + "\n  - ".join(errs))
         return False
     backup = backup_path(incident_id, step)
-    write_backup(step, backup, before)
-    entry.update({"kopia": str(backup), "modifiedon_przed": before.get("modifiedon"),
+    sha = write_backup(step, backup, before)
+    entry.update({"kopia": str(backup), "kopia_plan": f"{C.BACKUP_DIR_NAME}/{backup.name}", "kopia_sha256": sha,
+                  "modifiedon_przed": before.get("modifiedon"),
                   "zmiany": step["zmiany"]})
     changed = copy.deepcopy(definition)
     for ch in step["zmiany"]:
@@ -829,13 +831,14 @@ def exec_flow_patch(incident_id: str, step: dict, entry: dict) -> bool:
         out(f"Definicja zapisana, ale stan flow zmienil sie z {before.get('statecode')} na {after.get('statecode')}.")
         return False
     out(f"Zapisano {len(declared)} zmian(y) w {after.get('name')}. Porownanie po zapisie: tylko zadeklarowane sciezki. "
-        f"Kopia: {backup}")
+        f"Kopia: {entry['kopia_plan']} (sha256 {sha})")
     return True
 
 
 def backup_path(incident_id: str, step: dict) -> Path:
-    """Nowy plik kopii; przy dwoch zapisach w tej samej sekundzie z numerem, nigdy nadpisanie."""
-    folder = C.incident_dir(Path.cwd(), incident_id) / C.BACKUP_DIR_NAME
+    """Nowy plik kopii w stanie (<stan>/kopie/<ID>/); przy dwoch zapisach w tej samej sekundzie z numerem,
+    nigdy nadpisanie. W planie kopia wystepuje jako backup/<plik>."""
+    folder = C.backup_dir(incident_id)
     base = f"{step['workflowid']}-{C.now().strftime('%Y%m%dT%H%M%SZ')}"
     path, n = folder / f"{base}.json", 1
     while path.exists():
@@ -854,9 +857,74 @@ def write_backup(step: dict, backup: Path, before: dict) -> str:
     return sha
 
 
+def migrate_legacy_backups(incident_id: str) -> list[str]:
+    """Przenosi kopie sprzed 1.2.2 z zgloszenia/<ID>/backup/ do stanu. Oryginal znika dopiero po
+    zapisaniu i sprawdzeniu skrotu kopii w stanie. Plik o tej samej nazwie i innej tresci zostaje na miejscu.
+    Zwraca nazwy plikow, ktorych nie przeniesiono."""
+    if not C.valid_id(incident_id):
+        return []
+    folder = C.incident_dir(Path.cwd(), incident_id)
+    legacy = C.legacy_backup_dir(folder)
+    if not legacy.is_dir():
+        return []
+    try:  # dowiazanie albo junction w miejscu backup/ wskazuje cudze pliki: nie przenosimy
+        if legacy.is_symlink() or getattr(legacy, "is_junction", lambda: False)() \
+                or not legacy.resolve().is_relative_to(folder.resolve()):
+            out(f"Uwaga: {legacy} jest dowiazaniem, kopii nie przeniesiono.")
+            return [legacy.name]
+    except OSError:
+        return [legacy.name]
+    left = []
+    for old in sorted(legacy.iterdir()):
+        try:
+            if old.is_symlink() or not old.is_file():
+                left.append(old.name)
+                continue
+            data = old.read_bytes()
+            sha = C.hashlib.sha256(data).hexdigest()
+            new = C.backup_dir(incident_id) / old.name
+            if new.exists():
+                if C.file_sha256(new) != sha:
+                    left.append(old.name)
+                    continue
+            else:
+                new.parent.mkdir(parents=True, exist_ok=True)
+                new.write_bytes(data)
+                os.chmod(new, stat.S_IREAD)
+                if C.file_sha256(new) != sha:
+                    left.append(old.name)
+                    continue
+            os.chmod(old, stat.S_IREAD | stat.S_IWRITE)
+            old.unlink()
+        except OSError:
+            left.append(old.name)
+    try:
+        legacy.rmdir()
+    except OSError:
+        pass
+    moved = "przeniesione" if not left else f"przeniesione poza: {', '.join(left)}"
+    C.audit({"typ": "przeniesienie-kopii", "id": incident_id, "wynik": moved})
+    if left:
+        out(f"Uwaga: kopie w {legacy} nie zostaly w calosci przeniesione do stanu ({', '.join(left)}). "
+            "Przenies je recznie poza zasiegiem Claude albo usun, jesli sa niepotrzebne.")
+    return left
+
+
+def migrate_all_legacy_backups() -> None:
+    """Kopie sprzed 1.2.2 ze wszystkich zgloszen (nie tylko biezacego) trafiaja do stanu."""
+    root = C.incidents_root(Path.cwd())
+    try:
+        ids = [d.parent.name for d in root.glob(f"*/{C.BACKUP_DIR_NAME}")] if root.is_dir() else []
+    except OSError:
+        ids = []
+    for incident_id in ids:
+        migrate_legacy_backups(incident_id)
+
+
 def load_new_definition(step: dict, folder: Path) -> tuple[dict | None, bytes, str | None]:
-    """Plik nowej definicji czytany raz: skrot liczony z tych samych bajtow, ktore ida do zapisu."""
-    path = folder / step["plik"]
+    """Plik nowej definicji czytany raz: skrot liczony z tych samych bajtow, ktore ida do zapisu.
+    Kopia (backup/<plik>) jest czytana ze stanu."""
+    path = C.step_file_path(folder, step["plik"])
     try:
         raw = path.read_bytes()
     except OSError as e:
@@ -911,8 +979,8 @@ def flow_definition_preview(step: dict, folder: Path) -> list[str]:
         out("  " + json.dumps({"nr": 1, "opis": "Wycofanie: " + str(step.get("opis", "")), "typ": "flow-definition",
                                "srodowisko": step["srodowisko"], "workflowid": step["workflowid"],
                                "oczekiwany_modifiedon": "<modifiedon_po z wykonanie.jsonl>",
-                               "plik": f"{C.BACKUP_DIR_NAME}/<kopia z wykonanie.jsonl>",
-                               "sha256": "<sha256 kopii z wykonanie.jsonl>"}, ensure_ascii=False))
+                               "plik": f"{C.BACKUP_DIR_NAME}/<plik z pola kopia_plan w wykonanie.jsonl>",
+                               "sha256": "<kopia_sha256 z wykonanie.jsonl>"}, ensure_ascii=False))
     return errs
 
 
@@ -932,7 +1000,7 @@ def exec_flow_definition(incident_id: str, step: dict, entry: dict) -> bool:
         return False
     backup = backup_path(incident_id, step)
     sha = write_backup(step, backup, before)
-    entry.update({"kopia": str(backup), "kopia_sha256": sha,
+    entry.update({"kopia": str(backup), "kopia_plan": f"{C.BACKUP_DIR_NAME}/{backup.name}", "kopia_sha256": sha,
                   "modifiedon_przed": before.get("modifiedon"), "plik": step["plik"], "sha256": step["sha256"],
                   "zmiany_akcji": describe_changes(changes)})
     log_entry(incident_id, {**entry, "etap": "zapis-rozpoczety"})
@@ -963,7 +1031,7 @@ def exec_flow_definition(incident_id: str, step: dict, entry: dict) -> bool:
             + (". Przywrocono kopie." if entry["przywrocono"] else f". PRZYWROCENIE NIEUDANE, kopia: {backup}"))
         return False
     out(f"Zapisano nowa definicje {after.get('name')} ({len(changes)} zmian(y) akcji). Porownanie po zapisie: "
-        f"zgodna z plikiem. Kopia: {backup} (sha256 {entry['kopia_sha256']})")
+        f"zgodna z plikiem. Kopia: {entry['kopia_plan']} (sha256 {entry['kopia_sha256']})")
     return True
 
 
@@ -971,6 +1039,7 @@ def cmd_exec(args: list[str]) -> None:
     if len(args) != 2 or not args[1].isdigit():
         fail("Uzycie: ppcall exec <ID> <nr-kroku>")
     incident_id, nr = args[0], int(args[1])
+    migrate_all_legacy_backups()
     ok, reason, step = C.can_execute(Path.cwd(), incident_id, nr)
     if not ok:
         C.audit({"typ": "odmowa-wykonania", "id": incident_id, "krok": nr, "powod": reason})
