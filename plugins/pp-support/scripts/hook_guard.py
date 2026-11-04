@@ -231,6 +231,14 @@ PS_FLAG_OPTIONS = ("-noprofile", "-nologo", "-noninteractive", "-noexit", "-sta"
 PS_FLAG_ALIASES = {"-nop", "-noni", "-nol", "-l", "-?", "/?", "-h"}
 
 
+def _ps_option_name(arg: str) -> str:
+    """Pelna nazwa opcji -WorkingDirectory dla jej skrotow (-wd, -work, -WorkingDir:...)."""
+    name = arg.lower().split(":", 1)[0]
+    if name == "-wd" or (len(name) >= 3 and "-workingdirectory".startswith(name) and name != "-w"):
+        return "-workingdirectory"
+    return name
+
+
 def _ps_option(arg: str) -> str | None:
     """Rodzaj opcji pwsh/powershell (skroty jak w PowerShell): 'value', 'flag', 'file' albo None (nieznana)."""
     name = arg.lower().split(":", 1)[0].replace("/", "-", 1) if arg.startswith("/") else arg.lower().split(":", 1)[0]
@@ -259,25 +267,47 @@ def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", 
                     "-command".startswith(a) or "-commandwithargs".startswith(a)))
             return bool(re.fullmatch(r"-[a-z]*c", a))
 
-        start = next((i + 2 for i, a in enumerate(args) if code_flag(a)), None)
+        # Argumenty po kolei: opcje, potem flaga kodu (-c/-Command) albo pierwszy argument pozycyjny.
+        start, wd, i = None, None, 0
+        while i < len(args):
+            a = args[i]
+            if code_flag(a):
+                if i + 1 >= len(args) or args[i + 1] == "-":
+                    return True  # kod ze stdin albo brak kodu: nie da sie sprawdzic
+                start = i + 2
+                break
+            if not a.startswith(("-", "/")) or a == "-":
+                if a == "-":
+                    return True  # skrypt ze stdin
+                start = i + 1  # powershell 5.1: reszta to polecenie; bash: skrypt (sprawdzany jak polecenie)
+                break
+            if ps:
+                kind = _ps_option(a)
+                if kind == "file":
+                    value = a.split(":", 1)[1] if ":" in a else (args[i + 1] if i + 1 < len(args) else "-")
+                    return value == "-"  # -File skrypt.ps1 to skrypt; -File - czyta kod ze stdin
+                if kind is None:
+                    return True  # nieznana opcja: nie zgadujemy, gdzie zaczyna sie polecenie
+                if kind == "value":
+                    value = a.split(":", 1)[1] if ":" in a else (tokens[i + 2] if i + 2 < len(tokens) else "")
+                    if _ps_option_name(a) in ("-workingdirectory", "-wd"):
+                        wd = value
+                    i += 1 if ":" in a else 2
+                    continue
+            elif re.fullmatch(r"-[a-z]*s[a-z]*", a):
+                return True  # bash -s: kod ze stdin
+            elif a in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file"):
+                i += 2
+                continue
+            i += 1
         if start is None:
-            i = 0
-            while i < len(args):
-                a = args[i]
-                if not a.startswith(("-", "/")):
-                    start = i + 1  # bez -Command/-c: powershell 5.1 traktuje reszte jak polecenie, bash jak skrypt
-                    break
-                if ps:
-                    kind = _ps_option(a)
-                    if kind == "file":
-                        return False  # -File skrypt.ps1: skrypt, nie polecenie
-                    if kind is None:
-                        return True  # nieznana opcja: nie zgadujemy, gdzie zaczyna sie polecenie
-                    i += 2 if kind == "value" and ":" not in a else 1
-                else:
-                    i += 1
-        if start is None or start >= len(tokens):
-            return False
+            # sama powloka: kod ze stdin, gdy polecenie podaje go potokiem albo przekierowaniem
+            return bool(full and re.search(r"[|<]", full))
+        if start >= len(tokens):
+            return True
+        if wd:
+            cwd = os.path.join(cwd, HOME_VAR_RE.sub(lambda _: str(Path.home()).replace("\\", "/"),
+                                                   wd.replace("\\", "/")))
         inner = " ".join(tokens[start:])
         return any(recursive_reaches_state(tokenize(seg.strip(), inner_dialect), cwd, inner_dialect, inner)
                    for seg in split_segments(inner, inner_dialect))

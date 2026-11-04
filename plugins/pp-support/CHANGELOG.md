@@ -3,6 +3,7 @@
 ## 1.2.4 (2026-11-04)
 
 - Strażnik, rozmowa dyżurna: rekurencja w PowerShell uruchomionym bez `-Command` (`powershell Get-ChildItem ~ -Recurse`; Windows PowerShell 5.1 traktuje argumenty jak polecenie) jest blokowana. Opcje `pwsh`/`powershell` są rozpoznawane po prefiksie, jak w PowerShell (`-Execution Bypass`, `-ExecutionPolicy:Bypass`, `-cwa`, `/command`), a nieznana opcja przed poleceniem kończy się odmową zamiast zgadywania, gdzie polecenie się zaczyna. `-File skrypt.ps1` nie jest traktowane jak polecenie.
+- Argumenty powłoki czytane po kolei: flaga `-c`/`-Command` liczy się tylko przed pierwszym argumentem pozycyjnym (`bash skrypt.sh -c x` to skrypt). `-WorkingDirectory`/`-wd` zmienia katalog, względem którego sprawdzana jest rekurencja. Kod ze stdin (`-File -`, `-Command -`, `bash -s`, `… | bash`) i brak kodu po `-c` kończą się odmową, bo nie da się ich sprawdzić.
 
 ## 1.2.3 (2026-11-04)
 
