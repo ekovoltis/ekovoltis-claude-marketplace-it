@@ -3,7 +3,7 @@
 ## 1.1.1 (2026-11-04)
 
 - Poprawka 1.1.0: ochrona stanu akceptacji blokowała zwykłą pracę także poza rozmowami dyżurnymi, np. `cd ".../plugins/pp-support"` (cudzysłów po nazwie brany za sklejanie), każde polecenie ze słowem „akceptacje” (zapis notatki heredociem) i ścieżki z katalogiem `sesje`. Wzorce obejść (globy na nazwie stanu, podkatalogi `akceptacje` i `sesje`) działają teraz tylko, gdy polecenie wskazuje katalog domowy albo `.claude` (`~`, `$HOME`, `USERPROFILE`, `.claude`, także sklejone z części, wzorce typu `.c?aude`, `..` w ścieżce, wzorzec tuż za katalogiem domowym) albo gdy bieżący katalog to dom lub `.claude`. `akceptacje` i `sesje` liczą się tylko jako część ścieżki.
-- Sklejanie nazwy z części (`'pp-support-'state`, `"pp-support-" + "state"`) wykrywa porównanie pełnej nazwy po usunięciu cudzysłowów, zawsze. Nowe: każde polecenie powłoki uruchomione z wnętrza katalogu stanu jest odrzucane.
+- Sklejanie nazwy z części (`'pp-support-'state`, `"pp-support-" + "state"`) wykrywa porównanie pełnej nazwy po usunięciu cudzysłowów, zawsze. Nowe: każde polecenie powłoki uruchomione z wnętrza katalogu stanu jest odrzucane. Bez kotwicy, jak w 1.1.0, nadal odrzucane są wzorce po `pp-supp` (`pp-supp*`), wzorce z co najmniej 5 znakami nazwy (`*-state`) i fragment nazwy w kodzie podanym interpreterowi (`python -c`, `node -e`, `pwsh -Command`).
 
 ## 1.1.0 (2026-11-03)
 

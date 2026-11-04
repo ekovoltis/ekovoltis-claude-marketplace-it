@@ -39,6 +39,12 @@ HOME_ANCHOR_RE = re.compile(
     r"(?<![\w~])~(?=[/\\\s\"';&|)]|$)|\$\{?HOME\b|\$env:HOME|USERPROFILE|HOMEPATH|GetFolderPath|"
     r"\.claude|(?<![\w.])\.[^\s/\\.]*[*?\[]|(?<![\w.])\.\.(?=[/\\\s\"';&|)]|$)", re.I)  # .c*, .[c]laude, ..
 GLOB_WORD_RE = re.compile(r"[^\s/\\;&|()<>=]*[*?\[][^\s/\\;&|()<>=]*")
+# Zawsze, bez kotwicy: wzorzec po pp-supp (jak w 1.1.0) i fragment nazwy w kodzie podanym interpreterowi
+# (python -c "'%s-state' % 'pp-support'"), bo zmienna albo formatowanie napisu omija kotwice.
+STATE_GLOB_ALWAYS_RE = re.compile(r"pp-?supp[^\s/\\@]*[*?\[\]]", re.I)
+INLINE_CODE_RE = re.compile(r"(^|[\s/\\])(python[\d.]*|py|node|perl|ruby|pwsh|powershell)(\.exe)?\s"
+                            r"(.*\s)?-(c|e|Command|EncodedCommand)\b", re.I)
+STATE_PART_RE = re.compile(r"pp-?supp|support-st", re.I)
 
 
 def _dequote(s: str) -> str:
@@ -63,10 +69,10 @@ def _glob_under_home(text: str) -> bool:
     return bool(re.search(re.escape(_home()) + r"/[^/\s]*[*?\[]", t))
 
 
-def _glob_hits_state(text: str) -> bool:
-    """Wzorzec z co najmniej dwoma znakami doslownymi, ktory pasuje do nazwy katalogu stanu (pp-s*, pp-supp?rt-st*)."""
+def _glob_hits_state(text: str, min_literal: int = 2) -> bool:
+    """Wzorzec z co najmniej min_literal znakami doslownymi, ktory pasuje do nazwy katalogu stanu (pp-s*, *-state)."""
     for word in GLOB_WORD_RE.findall(text):
-        if len(re.sub(r"[*?]|\[[^\]]*\]?", "", word)) >= 2 and fnmatch.fnmatch(C.STATE_DIR_NAME, word.lower()):
+        if len(re.sub(r"[*?]|\[[^\]]*\]?", "", word)) >= min_literal and fnmatch.fnmatch(C.STATE_DIR_NAME, word.lower()):
             return True
     return False
 
@@ -82,6 +88,9 @@ def touches_state(s: str, cwd: str, full: str | None = None) -> bool:
             return True
     except (OSError, ValueError):
         pass
+    if (STATE_GLOB_ALWAYS_RE.search(s) or STATE_GLOB_ALWAYS_RE.search(deq) or _glob_hits_state(deq, 5)
+            or (INLINE_CODE_RE.search(s) and STATE_PART_RE.search(deq))):
+        return True
     whole = s if full is None else full
     dwhole = _dequote(whole)
     if not (HOME_ANCHOR_RE.search(whole) or HOME_ANCHOR_RE.search(dwhole) or _home_cwd(cwd)
