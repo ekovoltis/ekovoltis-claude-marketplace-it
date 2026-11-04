@@ -77,6 +77,29 @@ def _glob_hits_state(text: str, min_literal: int = 2) -> bool:
     return False
 
 
+def touches_backup(s: str, cwd: str) -> bool:
+    """Polecenie powloki siegajace do zgloszenia/<ID>/backup (odczyt, kopiowanie, zapis)."""
+    text = _dequote(s).replace("\\", "/").lower()
+    if re.search(rf"{C.INCIDENTS_DIR_NAME}/[^/\s]+/{C.BACKUP_DIR_NAME}(/|[\s*?\[]|$)", text):
+        return True
+    try:
+        root = _norm_path(str(C.incidents_root(cwd))).rstrip("/")
+        here = _norm_path(str(Path(cwd).resolve())).rstrip("/")
+    except (OSError, ValueError):
+        return True
+    if root and root in _norm_path(text) and f"/{C.BACKUP_DIR_NAME}" in text:
+        return True
+    rel = here[len(root) + 1:].split("/") if here.startswith(root + "/") else []
+    in_backup = (len(rel) >= 2 and rel[1] == C.BACKUP_DIR_NAME) or bool(
+        re.search(rf"/{C.INCIDENTS_DIR_NAME}/[^/]+/{C.BACKUP_DIR_NAME}(/|$)", here))
+    in_incident = len(rel) == 1 or bool(re.search(rf"/{C.INCIDENTS_DIR_NAME}/[^/]+$", here))
+    if in_backup:
+        return True  # biezacy katalog to kopia
+    if in_incident and re.search(rf"(^|[\s/\"'=]){C.BACKUP_DIR_NAME}([/\s*?\[]|$)", text):
+        return True  # biezacy katalog to zgloszenie, odwolanie wzgledne do backup/
+    return False
+
+
 def touches_state(s: str, cwd: str, full: str | None = None) -> bool:
     """s: segment polecenia; full: cale polecenie (kotwica z innego segmentu, np. cd ~/.claude && rm ...)."""
     deq = _dequote(s)
@@ -249,10 +272,14 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
                 return "deny", reason
             extra = ""
             if step.get("typ") == "flow-patch":
-                values = " | ".join(f"{C.flow_patch_label(c['sciezka'])}: bylo {c['bylo'][:160]!r}, "
-                                    f"ma byc {c['ma_byc'][:160]!r}" for c in step["zmiany"])
+                values = " | ".join(f"{C.flow_patch_label(c['sciezka'])}: bylo {C.value_text(c['bylo'])!r}, "
+                                    f"ma byc {C.value_text(c['ma_byc'])!r}" for c in step["zmiany"])
                 extra = (f" Wartosci: {values}. ppcall zapisze kopie, a po zapisie porowna definicje i przy "
                          "kazdej innej roznicy przywroci kopie.")
+            if step.get("typ") == "flow-definition":
+                extra = (" Nowa definicja flow z pliku zgloszenia (moze dodawac, usuwac i przestawiac akcje). "
+                         "ppcall porowna ja z aktualna, zapisze kopie, a po zapisie przy kazdej roznicy albo "
+                         "zmianie stanu flow przywroci kopie. Zmiany akcji pokazal ppcall plan-check.")
             return "ask", (f"ZMIANA W SRODOWISKU. Zgloszenie {args[1]}, krok {args[2]}: {step['opis']} | "
                            f"{C.step_summary(step)}.{extra} Zatwierdz tylko jesli to dokladnie zaakceptowany krok.")
         if sub in ("get", "runs"):
@@ -264,11 +291,14 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
                 if decision:
                     return decision, reason
         if sub in {"get", "runs", "verify", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke",
-                   "config", ""}:
+                   "config", "konfiguracja", ""}:
             return "allow", "pp-support: operacja tylko do odczytu lub na lokalnych plikach zgloszenia"
         return "deny", f"Nieznana komenda ppcall: {sub}"
     if touches_state(s, cwd, full):
         return "deny", "Stan akceptacji pp-support jest dostepny tylko dla ppcall i hookow."
+    if touches_backup(s, cwd):
+        return "deny", ("Kopie definicji flow w backup/ czyta i zapisuje wylacznie ppcall (moga zawierac hasla). "
+                        "Do wycofania sluzy krok flow-definition z plikiem kopii.")
     if not active:
         return None, ""
     if TOKEN_RE.search(s):

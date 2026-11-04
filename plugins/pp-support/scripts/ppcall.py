@@ -3,13 +3,14 @@
 Odczyt:      ppcall get <url> [--out plik] [--max-kb N] [--all [--max-pages N]]
 Przebiegi:   ppcall runs <env-id> <flow> --out plik.jsonl [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--max N]
                          [--akcje] [--wejscia A,B] [--wyjscia A,B]   (trigger = wyzwalacz)
+             ppcall runs <adres Dataverse> <workflowid> --out ...    (srodowisko ustali ppcall)
 Weryfikacja: ppcall verify <ID>
 Dostepy:     ppcall dostepy
-Rejestr:     ppcall rejestr <fraza...>
+Rejestr:     ppcall rejestr <fraza...> | ppcall rejestr --flow <adres Dataverse> <workflowid>
 Plan:        ppcall plan-new <ID> | plan-check <ID> | status <ID>
 Wykonanie:   ppcall exec <ID> <nr-kroku>     (tylko po akceptacji czlowieka)
 Odwolanie:   ppcall revoke <ID>
-Konfig:      ppcall config
+Konfig:      ppcall konfiguracja   (albo config; tylko odczyt)
 
 Tokeny sa pobierane wewnatrz procesu i nigdy nie sa wypisywane.
 """
@@ -232,6 +233,15 @@ def _short(payload: bytes, max_kb: int) -> str:
 
 # ---------------------------------------------------------------- komendy
 
+DATAVERSE_READ_HEADERS = {"Prefer": 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"'}
+
+
+def read_headers(url: str) -> dict:
+    """Odczyt z Dataverse z nazwami wartosci (lookupy, opcje), nie tylko GUID i liczbami."""
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return dict(DATAVERSE_READ_HEADERS) if C.DATAVERSE_HOST_RE.match(host) else {}
+
+
 def get_all(url: str, max_pages: int) -> tuple[int, bytes]:
     """Laczy strony wyniku (@odata.nextLink albo nextLink) w jedna liste value."""
     host = urllib.parse.urlparse(url).hostname
@@ -239,7 +249,7 @@ def get_all(url: str, max_pages: int) -> tuple[int, bytes]:
     while next_url and pages < max_pages:
         if urllib.parse.urlparse(next_url).hostname != host:
             raise RuntimeError("Nastepna strona wyniku wskazuje inny host, przerwano.")
-        status, payload = http("GET", next_url)
+        status, payload = http("GET", next_url, headers=read_headers(next_url))
         if status >= 400:
             return status, payload
         page = json.loads(payload)
@@ -275,7 +285,7 @@ def cmd_get(args: list[str]) -> None:
             C.audit({"typ": "odmowa-zapisu", "url": C.redact_url(url), "out": out_file, "powod": problem})
             fail(problem, 3)
     try:
-        status, payload = get_all(url, max_pages) if all_pages else http("GET", url)
+        status, payload = get_all(url, max_pages) if all_pages else http("GET", url, headers=read_headers(url))
     except (RuntimeError, ValueError) as e:
         fail(str(e))
     C.audit({"typ": "odczyt", "url": C.redact_url(url), "status": status, "wszystkie_strony": all_pages})
@@ -333,12 +343,59 @@ def _run_record(run: dict, detail: dict | None, inputs: set, outputs: set) -> di
     return rec
 
 
+BAP_ENVIRONMENTS = ("https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments"
+                    "?api-version=2020-10-01")
+
+
+def resolve_flow(dataverse: str, workflowid: str) -> tuple[str, str]:
+    """Srodowisko Power Automate dla adresu Dataverse (BAP) i identyfikator flow w Flow API.
+    Flow z rozwiazania moze miec w Flow API inny identyfikator niz workflowid: probujemy kolejno."""
+    dataverse = dataverse.rstrip("/")
+    if dataverse.lower() not in [u.rstrip("/").lower() for u in C.load_config().get("dataverse_urls") or []]:
+        raise RuntimeError(f"{dataverse} nie jest na liscie dataverse_urls w ustawieniach pluginu.")
+    status, payload = http("GET", BAP_ENVIRONMENTS)
+    if status != 200:
+        raise RuntimeError(f"Lista srodowisk (BAP): HTTP {status}")
+    env = None
+    for e in json.loads(payload).get("value") or []:
+        url = (((e.get("properties") or {}).get("linkedEnvironmentMetadata") or {}).get("instanceUrl") or "")
+        if url.rstrip("/").lower() == dataverse.lower():
+            env = e.get("name")
+            break
+    if not env or not C.GUID_RE.fullmatch(str(env).replace("Default-", "")):
+        raise RuntimeError(f"Nie znaleziono srodowiska Power Platform dla {dataverse}.")
+    candidates = [workflowid]
+    status, payload = http("GET", f"{dataverse}/api/data/v9.2/workflows({workflowid})"
+                                  "?$select=name,workflowidunique,resourceid")
+    if status == 200:
+        rec = json.loads(payload)
+        candidates += [str(rec[k]) for k in ("resourceid", "workflowidunique")
+                       if rec.get(k) and C.GUID_RE.fullmatch(str(rec[k])) and str(rec[k]) not in candidates]
+    for cand in candidates:
+        st, _ = http("GET", f"{FLOW_API}/{env}/flows/{cand}?api-version=2016-11-01")
+        if st == 200:
+            return env, cand
+    raise RuntimeError(f"Flow {workflowid} nie jest widoczny w Flow API srodowiska {env} "
+                       f"(sprawdzone identyfikatory: {', '.join(candidates)}).")
+
+
 def cmd_runs(args: list[str]) -> None:
     usage = ("Uzycie: ppcall runs <env-id> <flow> --out plik.jsonl [--od RRRR-MM-DD] [--do RRRR-MM-DD] [--max N] "
-             "[--akcje] [--wejscia A,B] [--wyjscia A,B]")
-    if len(args) < 2 or not C.GUID_RE.fullmatch(args[0]) or not C.GUID_RE.fullmatch(args[1]):
+             "[--akcje] [--wejscia A,B] [--wyjscia A,B]\n"
+             "   albo: ppcall runs <adres Dataverse> <workflowid> --out ... (srodowisko ustali ppcall)")
+    if len(args) < 2 or not C.GUID_RE.fullmatch(args[1]):
         fail(usage)
-    env, flow, rest = args[0], args[1], args[2:]
+    if args[0].lower().startswith("https://"):
+        try:
+            env, flow = resolve_flow(args[0], args[1])
+        except (RuntimeError, ValueError) as e:
+            fail(str(e))
+        out(f"Srodowisko {env}, flow {flow}")
+    elif C.GUID_RE.fullmatch(args[0].replace("Default-", "")):
+        env, flow = args[0], args[1]
+    else:
+        fail(usage)
+    rest = args[2:]
     out_file, since, until, limit, detail, inputs, outputs = None, "", "", 1000, False, set(), set()
     while rest:
         flag = rest.pop(0)
@@ -520,8 +577,32 @@ def cmd_dostepy(_args: list[str]) -> None:
     out(f"\nRaport: {report}")
 
 
+def _registry_exact(r: dict, words: list[str]) -> int:
+    """Ile slow trafia dokladnie w prefiks albo akronim (007 i AKDW przed 017 i AKDWT)."""
+    keys = {str(r.get(k) or "").lower() for k in ("prefix", "akronim")}
+    return sum(1 for w in words if w in keys)
+
+
 def cmd_rejestr(args: list[str]) -> None:
     data = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    if args[:1] == ["--flow"]:
+        if len(args) != 3 or not C.GUID_RE.fullmatch(args[2]):
+            fail("Uzycie: ppcall rejestr --flow <adres Dataverse> <workflowid>")
+        dataverse = args[1].rstrip("/")
+        if dataverse.lower() not in [u.rstrip("/").lower() for u in C.load_config().get("dataverse_urls") or []]:
+            fail(f"{dataverse} nie jest na liscie dataverse_urls w ustawieniach pluginu.")
+        try:
+            status, payload = http("GET", f"{dataverse}/api/data/v9.2/workflows({args[2]})?$select=name")
+        except RuntimeError as e:
+            fail(str(e))
+        if status != 200:
+            fail(f"Odczyt nazwy flow: HTTP {status}")
+        name = str(json.loads(payload).get("name") or "")
+        m = re.match(r"\s*(?:\[[^\]]*\]\s*)?(\d{2,4})(?!\d)", name)
+        out(f"Flow: {name}")
+        if not m:
+            fail("Nazwa flow nie zaczyna sie od numeru automatu, szukaj slowami: ppcall rejestr <slowa>")
+        args = [m.group(1)]
     words = [w.lower() for w in args]
     out(f"Migawka rejestru z {data['stan_na']}. {data['uwaga']}")
     hits = []
@@ -529,6 +610,7 @@ def cmd_rejestr(args: list[str]) -> None:
         hay = json.dumps(r, ensure_ascii=False).lower()
         if all(w in hay for w in words):
             hits.append(r)
+    hits.sort(key=lambda r: -_registry_exact(r, words))
     for r in hits[:15]:
         out("-" * 60)
         for k in ("prefix", "akronim", "nazwa", "status", "rozwiazanie", "trigger", "systemy",
@@ -587,7 +669,7 @@ def flow_patch_preview(step: dict) -> list[str]:
     out(f"  Flow: {workflow.get('name')} (modifiedon {workflow.get('modifiedon')}, statecode {workflow.get('statecode')})")
     for ch in step["zmiany"]:
         out(f"  - {C.flow_patch_label(ch['sciezka'])}\n      sciezka: {' / '.join(ch['sciezka'])}"
-            f"\n      bylo:    {ch['bylo']}\n      ma byc:  {ch['ma_byc']}")
+            f"\n      bylo:    {C.value_text(ch['bylo'], 4000)}\n      ma byc:  {C.value_text(ch['ma_byc'], 4000)}")
     if not errs:
         out("  Krok wycofania (nowy plan z nowa akceptacja, gdy bedzie potrzebny):")
         out("  " + json.dumps(reverse_step(step), ensure_ascii=False))
@@ -601,7 +683,7 @@ def cmd_plan_check(args: list[str]) -> None:
     if not pp.exists():
         fail(f"Brak {pp}")
     text = pp.read_text(encoding="utf-8")
-    errs, steps = C.check_plan(text)
+    errs, steps = C.check_plan(text, pp.parent)
     if errs:
         out("Plan NIE jest gotowy do akceptacji:")
         for e in errs:
@@ -613,6 +695,8 @@ def cmd_plan_check(args: list[str]) -> None:
         out(f"  Krok {s['nr']}: {s['opis']}\n          {C.step_summary(s)}")
         if s["typ"] == "flow-patch":
             live_errs.extend(f"krok {s['nr']}: {e}" for e in flow_patch_preview(s))
+        elif s["typ"] == "flow-definition":
+            live_errs.extend(f"krok {s['nr']}: {e}" for e in flow_definition_preview(s, pp.parent))
     if live_errs:
         out("Plan NIE jest gotowy do akceptacji, aktualna definicja flow nie zgadza sie z planem:")
         for e in live_errs:
@@ -631,7 +715,7 @@ def cmd_status(args: list[str]) -> None:
     out(f"Plan: {'jest' if pp.exists() else 'brak'}")
     if pp.exists():
         text = pp.read_text(encoding="utf-8")
-        errs, steps = C.check_plan(text)
+        errs, steps = C.check_plan(text, pp.parent)
         out(f"Skrot aktualnego planu: {C.plan_hash(text)}; krokow: {len(steps)}; bledow walidacji: {len(errs)}")
     if not appr:
         out("Akceptacja: brak")
@@ -668,11 +752,8 @@ def exec_flow_patch(incident_id: str, step: dict, entry: dict) -> bool:
         entry["odmowa"] = errs
         out("Flow nie zgadza sie z zaakceptowanym planem, nic nie zapisano:\n  - " + "\n  - ".join(errs))
         return False
-    backup_dir = C.incident_dir(Path.cwd(), incident_id) / C.BACKUP_DIR_NAME
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup = backup_dir / f"{step['workflowid']}-{C.now().strftime('%Y%m%dT%H%M%SZ')}.json"
-    backup.write_text(before["clientdata"], encoding="utf-8")
-    os.chmod(backup, stat.S_IREAD)
+    backup = backup_path(incident_id, step)
+    write_backup(step, backup, before)
     entry.update({"kopia": str(backup), "modifiedon_przed": before.get("modifiedon"),
                   "zmiany": step["zmiany"]})
     changed = copy.deepcopy(definition)
@@ -692,8 +773,10 @@ def exec_flow_patch(incident_id: str, step: dict, entry: dict) -> bool:
         written = json.loads(after["clientdata"])
         diff = set(C.leaf_diff(definition, written))
         entry["modifiedon_po"] = after.get("modifiedon")
-        ok = diff == declared and all(C.get_at(written, ch["sciezka"]) == ch["ma_byc"] for ch in step["zmiany"])
-        entry["nieoczekiwane_roznice"] = [" / ".join(d) for d in sorted(diff - declared)][:50]
+        unexpected = {d for d in diff if not any(d[:len(p)] == p for p in declared)}
+        ok = not unexpected and all(C.canon(C.get_at(written, ch["sciezka"])) == C.canon(ch["ma_byc"])
+                                    for ch in step["zmiany"])
+        entry["nieoczekiwane_roznice"] = [" / ".join(d) for d in sorted(unexpected)][:50]
     except Exception as e:  # noqa: BLE001
         ok = False
         entry["wyjatek_weryfikacji"] = str(e)
@@ -709,6 +792,140 @@ def exec_flow_patch(incident_id: str, step: dict, entry: dict) -> bool:
         return False
     out(f"Zapisano {len(declared)} zmian(y) w {after.get('name')}. Porownanie po zapisie: tylko zadeklarowane sciezki. "
         f"Kopia: {backup}")
+    return True
+
+
+def backup_path(incident_id: str, step: dict) -> Path:
+    """Nowy plik kopii; przy dwoch zapisach w tej samej sekundzie z numerem, nigdy nadpisanie."""
+    folder = C.incident_dir(Path.cwd(), incident_id) / C.BACKUP_DIR_NAME
+    base = f"{step['workflowid']}-{C.now().strftime('%Y%m%dT%H%M%SZ')}"
+    path, n = folder / f"{base}.json", 1
+    while path.exists():
+        path, n = folder / f"{base}-{n}.json", n + 1
+    return path
+
+
+def write_backup(step: dict, backup: Path, before: dict) -> str:
+    """Kopia definicji sprzed zapisu; zwraca jej skrot (z tych samych bajtow, ktore trafily do pliku)."""
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    data = before["clientdata"].encode("utf-8")
+    backup.write_bytes(data)
+    os.chmod(backup, stat.S_IREAD)
+    sha = C.hashlib.sha256(data).hexdigest()
+    C.register_backup(step["workflowid"], backup, sha)
+    return sha
+
+
+def load_new_definition(step: dict, folder: Path) -> tuple[dict | None, bytes, str | None]:
+    """Plik nowej definicji czytany raz: skrot liczony z tych samych bajtow, ktore ida do zapisu."""
+    path = folder / step["plik"]
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        return None, b"", f"nie mozna odczytac {step['plik']}: {e}"
+    if C.hashlib.sha256(raw).hexdigest() != step.get("sha256"):
+        return None, raw, f"plik {step['plik']} rozni sie od zaakceptowanego (inny skrot)"
+    try:
+        return json.loads(raw.decode("utf-8")), raw, None
+    except (ValueError, UnicodeDecodeError):
+        return None, raw, f"plik {step['plik']} nie jest poprawnym JSON"
+
+
+def _restoring(step: dict) -> bool:
+    return (str(step.get("plik", "")).replace("\\", "/").lower().startswith(C.BACKUP_DIR_NAME + "/")
+            and C.is_registered_backup(step["workflowid"], str(step.get("sha256", ""))))
+
+
+def describe_changes(changes: list[dict]) -> list[str]:
+    lines = []
+    for c in changes:
+        where = c.get("zakres") or "glowny zakres"
+        line = f"{c['zmiana']}: {c['akcja']} ({c.get('typ')}) w {where}"
+        if c.get("z_zakresu") is not None:
+            line += f", wczesniej w {c['z_zakresu'] or 'glowny zakres'}"
+        if c.get("klucze"):
+            line += f"; klucze: {', '.join(c['klucze'])}"
+        if c.get("podglad"):
+            line += f"\n      tresc: {c['podglad']}"
+        lines.append(line)
+    return lines
+
+
+def flow_definition_preview(step: dict, folder: Path) -> list[str]:
+    """Sprawdza nowa definicje wobec aktualnej i wypisuje zmiany akcji. Zwraca bledy."""
+    new, _, problem = load_new_definition(step, folder)
+    if problem:
+        return [problem]
+    try:
+        workflow = read_workflow(step)
+    except RuntimeError as e:
+        return [str(e)]
+    restoring = _restoring(step)
+    errs, _, changes = C.flow_definition_live_problems(step, workflow, new, restoring)
+    out(f"  Flow: {workflow.get('name')} (modifiedon {workflow.get('modifiedon')}, statecode {workflow.get('statecode')})")
+    if restoring:
+        out("  Plik to kopia zapisana przez ppcall exec: powrot do poprzedniej definicji.")
+    for line in describe_changes(changes):
+        out(f"  - {line}")
+    if not errs:
+        out("  Wycofanie (nowy plan z nowa akceptacja, gdy bedzie potrzebne): krok flow-definition z plikiem kopii, "
+            "ktory ppcall exec poda po zapisie, np.")
+        out("  " + json.dumps({"nr": 1, "opis": "Wycofanie: " + str(step.get("opis", "")), "typ": "flow-definition",
+                               "srodowisko": step["srodowisko"], "workflowid": step["workflowid"],
+                               "oczekiwany_modifiedon": "<modifiedon_po z wykonanie.jsonl>",
+                               "plik": f"{C.BACKUP_DIR_NAME}/<kopia z wykonanie.jsonl>",
+                               "sha256": "<sha256 kopii z wykonanie.jsonl>"}, ensure_ascii=False))
+    return errs
+
+
+def exec_flow_definition(incident_id: str, step: dict, entry: dict) -> bool:
+    """Zapis pelnej definicji z pliku: kopia, If-Match, porownanie po zapisie, przy roznicy przywrocenie."""
+    folder = C.incident_dir(Path.cwd(), incident_id)
+    new, _, problem = load_new_definition(step, folder)
+    if problem:
+        entry["odmowa"] = [problem]
+        out(f"{problem}. Nic nie zapisano.")
+        return False
+    before = read_workflow(step)
+    errs, definition, changes = C.flow_definition_live_problems(step, before, new, _restoring(step))
+    if errs:
+        entry["odmowa"] = errs
+        out("Flow albo plik nie zgadza sie z zaakceptowanym planem, nic nie zapisano:\n  - " + "\n  - ".join(errs))
+        return False
+    backup = backup_path(incident_id, step)
+    sha = write_backup(step, backup, before)
+    entry.update({"kopia": str(backup), "kopia_sha256": sha,
+                  "modifiedon_przed": before.get("modifiedon"), "plik": step["plik"], "sha256": step["sha256"],
+                  "zmiany_akcji": describe_changes(changes)})
+    log_entry(incident_id, {**entry, "etap": "zapis-rozpoczety"})
+    status, payload = http("PATCH", workflow_url(step), {"clientdata": json.dumps(new, ensure_ascii=False)},
+                           headers={"If-Match": before["@odata.etag"]})
+    entry["status"] = status
+    if not 200 <= status < 300:
+        entry["odpowiedz"] = _short(payload, 4)
+        out(f"Zapis odrzucony: HTTP {status}\n{_short(payload, 4)}")
+        return False
+    reason = None
+    try:
+        after = read_workflow(step)
+        entry["modifiedon_po"] = after.get("modifiedon")
+        diff = C.leaf_diff(new, json.loads(after["clientdata"]))
+        if diff:
+            entry["nieoczekiwane_roznice"] = [" / ".join(d) for d in diff][:50]
+            reason = "zapisana definicja rozni sie od pliku"
+        elif (after.get("statecode"), after.get("statuscode")) != (before.get("statecode"), before.get("statuscode")):
+            entry["stan_flow"] = [before.get("statecode"), after.get("statecode")]
+            reason = f"stan flow zmienil sie z {before.get('statecode')} na {after.get('statecode')}"
+    except Exception as e:  # noqa: BLE001
+        entry["wyjatek_weryfikacji"] = str(e)
+        reason = "nie dalo sie sprawdzic zapisu"
+    if reason:
+        entry["przywrocono"] = restore_definition(step, before, definition)
+        out(f"Po zapisie: {reason}"
+            + (". Przywrocono kopie." if entry["przywrocono"] else f". PRZYWROCENIE NIEUDANE, kopia: {backup}"))
+        return False
+    out(f"Zapisano nowa definicje {after.get('name')} ({len(changes)} zmian(y) akcji). Porownanie po zapisie: "
+        f"zgodna z plikiem. Kopia: {backup} (sha256 {entry['kopia_sha256']})")
     return True
 
 
@@ -732,6 +949,8 @@ def cmd_exec(args: list[str]) -> None:
             out(f"HTTP {status}\n{_short(payload, 20)}")
         elif step["typ"] == "flow-patch":
             success = exec_flow_patch(incident_id, step, entry)
+        elif step["typ"] == "flow-definition":
+            success = exec_flow_definition(incident_id, step, entry)
         else:
             exe = shutil.which(step["argv"][0])
             if not exe:
@@ -822,7 +1041,8 @@ def cmd_config(_args: list[str]) -> None:
 COMMANDS = {
     "get": cmd_get, "dostepy": cmd_dostepy, "rejestr": cmd_rejestr,
     "plan-new": cmd_plan_new, "plan-check": cmd_plan_check, "status": cmd_status,
-    "exec": cmd_exec, "revoke": cmd_revoke, "config": cmd_config, "runs": cmd_runs, "verify": cmd_verify,
+    "exec": cmd_exec, "revoke": cmd_revoke, "config": cmd_config, "konfiguracja": cmd_config, "runs": cmd_runs,
+    "verify": cmd_verify,
 }
 
 if __name__ == "__main__":

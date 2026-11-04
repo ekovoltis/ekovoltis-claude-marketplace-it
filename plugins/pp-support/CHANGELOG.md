@@ -1,5 +1,27 @@
 # Zmiany w pp-support
 
+## 1.2.0 (2026-11-04)
+
+Naprawy w definicji flow bez ścieżki SWO (decyzja Michała Kaszty z 2026-11-04, ITS-420). Niezmiennik 6 zmieniony: zmiana logiki flow jest dozwolona z akceptacją, w granicach poniżej.
+
+- `flow-patch` obejmuje też `inputs/select` (Select), `inputs/where` i `inputs/from` (Filter array), `inputs/columns` (Table), `expression` (warunek, Until), `foreach`, `inputs/runStatus` i `inputs/runError` (Terminate) oraz `runAfter` dowolnej akcji. Wartości poza `parameters` i `body` mogą być dowolnym JSON, porównywanym bez względu na kolejność kluczy. `runAfter` tylko na akcje z tego samego zakresu, bez cykli, ze znanymi statusami. Porównanie po zapisie dopuszcza różnice wyłącznie pod zadeklarowanymi ścieżkami.
+- Nowy krok `flow-definition`: pełna nowa definicja z pliku `flow-<workflowid>-nowa.json`, której skrót SHA-256 jest w planie. Może dodawać, usuwać i przestawiać akcje (najwyżej 10 na krok). Nie zmienia wyzwalaczy, połączeń ani niczego poza akcjami i nie dodaje akcji HTTP ani konektorów. `plan-check` pokazuje zmiany akcji. Po zapisie różnica wobec pliku albo zmiana stanu flow przywraca kopię. Wycofanie przez kopię z rejestru kopii. Nowe ustawienie `flow_definition_dataverse_urls`, domyślnie puste.
+- Kopie definicji mają unikalne nazwy także przy dwóch zapisach w tej samej sekundzie, a ich skróty trafiają do rejestru kopii w chronionym stanie.
+- `ppcall get` z Dataverse zwraca nazwy lookupów i opcji (`Prefer: odata.include-annotations=...FormattedValue`).
+- `ppcall runs <adres Dataverse> <workflowid>`: środowisko z BAP i identyfikator flow w Flow API ustala `ppcall`.
+- `ppcall rejestr`: dokładne trafienie kodu albo akronimu jest pierwsze (AKDW przed AKDWT); `--flow <adres Dataverse> <workflowid>` szuka po numerze z nazwy flow.
+- `ppcall konfiguracja`: odczyt ustawień (alias `config`), zamiast `cat` pliku w chronionym stanie.
+- Skill i README bez odwołań do SWO; wzorzec korekty lookupu Dataverse krokiem `http`.
+- Po przeglądzie bezpieczeństwa:
+  - `flow-patch` i `flow-definition` nie zmieniają zmiennych ani akcji, z których akcja wysyłająca (Http, konektor) bierze adres, nagłówki albo uwierzytelnienie. Bez tego zmiana zmiennej przekierowałaby istniejące wywołanie z danymi logowania. Zależności są liczone z domknięciem: łańcuchy przez Compose, Select, Parse JSON, zmienne i pętle, nazwy bez względu na wielkość liter. Nazwa wyliczana w wyrażeniu blokuje każdą zmianę akcji i zmiennych w tym flow. `result(...)` też liczy się jako odczyt wejść.
+  - Zakazane są wyrażenia `actions(...)` i pole `authentication`, czyli odczyt wejść innej akcji z hasłem.
+  - `flow-definition` dodaje i zmienia tylko akcje z listy typów wbudowanych. Typ jest czytany bez względu na wielkość liter, a klucze różniące się tylko wielkością liter są odrzucane.
+  - Zakres akcji jest rozpoznawany po ścieżce, nie po nazwie, więc zakres o nazwie `else` nie myli się z gałęzią warunku. Kontenery akcji innego typu niż obiekt są odrzucane, a tekst `***` (zamaskowane hasło) w zmienianych akcjach blokuje zapis.
+  - `plan-check` pokazuje treść dodanych i zmienionych akcji, z zamaskowanymi hasłami.
+  - Krok `http` w `workflows` może tylko włączyć albo wyłączyć flow (`statecode`, `statuscode`). W Power Automate API może tylko `start`, `stop`, `run`, `resubmit` i `cancel`. `$batch` i operacje na rozwiązaniach są zabronione. Krok `cli` nie przyjmuje `import`, `upgrade`, `publish` ani `deploy`.
+  - Strażnik blokuje polecenia powłoki sięgające do `zgloszenia/<ID>/backup` (odczyt, kopiowanie).
+  - Skrót kopii jest liczony z zapisanych bajtów, a status `runAfter` innego typu niż tekst nie wywołuje już wyjątku.
+
 ## 1.1.1 (2026-11-04)
 
 - Poprawka 1.1.0: ochrona stanu akceptacji blokowała zwykłą pracę także poza rozmowami dyżurnymi, np. `cd ".../plugins/pp-support"` (cudzysłów po nazwie brany za sklejanie), każde polecenie ze słowem „akceptacje” (zapis notatki heredociem) i ścieżki z katalogiem `sesje`. Wzorce obejść (globy na nazwie stanu, podkatalogi `akceptacje` i `sesje`) działają teraz tylko, gdy polecenie wskazuje katalog domowy albo `.claude` (`~`, `$HOME`, `USERPROFILE`, `.claude`, także sklejone z części, wzorce typu `.c?aude`, `..` w ścieżce, wzorzec tuż za katalogiem domowym) albo gdy bieżący katalog to dom lub `.claude`. `akceptacje` i `sesje` liczą się tylko jako część ścieżki.

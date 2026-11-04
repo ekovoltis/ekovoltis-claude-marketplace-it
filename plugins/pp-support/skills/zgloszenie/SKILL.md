@@ -19,9 +19,12 @@ Cały ruch do Azure, Power Platform, Dataverse, SharePoint i Fabric idzie przez:
 
 | Komenda | Do czego |
 |---|---|
-| `rejestr <frazy>` | wyszukanie automatu w migawce rejestru |
-| `get "<url>" [--out <katalog zgłoszenia>/plik] [--max-kb N] [--all]` | odczyt dowolnego API Microsoft z listy dozwolonych hostów; `--all` łączy wszystkie strony wyniku; `--out` zapisuje tylko w katalogu zgłoszenia, nigdy do `plan.md`, `wykonanie.jsonl` ani `weryfikacja.jsonl` |
+| `rejestr <frazy>` | wyszukanie automatu w migawce rejestru (dokładne trafienie kodu albo akronimu jest pierwsze) |
+| `rejestr --flow <adres Dataverse> <workflowid>` | pozycja rejestru dla flow, po numerze z jego nazwy w Dataverse |
+| `get "<url>" [--out <katalog zgłoszenia>/plik] [--max-kb N] [--all]` | odczyt dowolnego API Microsoft z listy dozwolonych hostów; `--all` łączy wszystkie strony wyniku; `--out` zapisuje tylko w katalogu zgłoszenia, nigdy do `plan.md`, `wykonanie.jsonl` ani `weryfikacja.jsonl`. Z Dataverse przychodzą też nazwy lookupów i opcji (`...@OData.Community.Display.V1.FormattedValue`) |
 | `runs <env-id> <flow> --out <plik.jsonl> [--od D] [--do D] [--max N] [--akcje] [--wejscia A,B] [--wyjscia A,B]` | historia przebiegów flow do pliku, z wynikiem każdej akcji i treścią wejść lub wyjść wskazanych akcji (`trigger` to wyzwalacz) |
+| `runs <adres Dataverse> <workflowid> --out ...` | to samo dla flow znanego z Dataverse: środowisko i identyfikator w Flow API ustala `ppcall` |
+| `konfiguracja` | ustawienia pluginu (tylko odczyt); plik konfiguracji leży w chronionym stanie, nie czytaj go `cat` |
 | `verify <ID>` | odczyty z sekcji „Weryfikacja po naprawie”, wynik do `weryfikacja.jsonl` |
 | `plan-new <ID>` | założenie katalogu zgłoszenia z `notatki.md` i `plan.md`; wypisuje jego pełną ścieżkę, której używaj w `--out` |
 | `plan-check <ID>` | walidacja planu i wyliczenie skrótu do akceptacji |
@@ -130,17 +133,31 @@ Poza zasięgiem pluginu, zawsze robi to człowiek, a Ty przygotowujesz instrukcj
 - usuwanie czegokolwiek (rekordów, flow, plików, rozwiązań, uruchomień),
 - ponowne uwierzytelnienie połączeń i zmiana właściciela flow,
 - odczyt i zmiana sekretów, uprawnień, ról i ustawień środowisk,
-- zmiany logiki flow, aplikacji i pipeline'ów na produkcji: dodawanie i usuwanie akcji, zmiany warunków, kolejności, wyzwalaczy i połączeń. Takie zmiany idą ścieżką deweloperską zgodnie ze standardem SWO, a Ty możesz pomóc przygotować ich opis dla developera.
+- zmiany wyzwalaczy, połączeń (connection references, `$connections`, połączenie akcji) i dodawanie akcji HTTP lub akcji konektorów w flow,
+- zmiany aplikacji Power Apps i pipeline'ów Fabric oraz wdrożenia rozwiązań,
+- zmiany flow w rozwiązaniach zarządzanych.
 
-Wyjątek: drobną zmianę wartości w istniejącej akcji flow (np. jedno wyrażenie w polu szablonu) można wykonać krokiem `flow-patch`, wyłącznie gdy:
+Naprawę w definicji flow robisz razem z dyżurnym, gdy przyczyna jest potwierdzona jako **FAKT**, plan ma sekcję „Analiza wpływu” (które przypadki zmienią wynik, a które nie, z liczbami z danych) i sekcję „Test” (wynik testu na kopii flow w środowisku testowym, przebieg próbny albo uzasadnienie, dlaczego test nie jest możliwy). Są dwa typy kroków, oba tylko dla flow niezarządzanych:
 
-- przyczyna jest potwierdzona jako **FAKT**,
-- plan ma sekcję „Analiza wpływu”: które przypadki zmienią wynik, a które nie, z liczbami z danych,
-- plan ma sekcję „Test”: wynik testu na kopii flow w środowisku testowym albo uzasadnienie, dlaczego test nie jest możliwy,
-- środowisko jest na liście `flow_patch_dataverse_urls` w ustawieniach pluginu.
+- **`flow-patch`**: zmiana wartości w istniejących akcjach, najwyżej 5 na krok, w środowiskach z `flow_patch_dataverse_urls`. Tekst pod `inputs/parameters` i `inputs/body`, całe `inputs` Compose, wartość zmiennej, mapowanie `inputs/select` (Select), `inputs/where` i `inputs/from` (Filter array), `inputs/columns` (Table), `expression` (warunek, Until), `foreach`, `inputs/runStatus` i `inputs/runError` (Terminate) oraz `runAfter` dowolnej akcji (tylko akcje z tego samego zakresu, bez cykli). Wartości inne niż tekst (np. mapowanie Select) zapisujesz jako JSON.
+- **`flow-definition`**: pełna nowa definicja z pliku `zgloszenia/<ID>/flow-<workflowid>-nowa.json`, gdy trzeba dodać, usunąć albo przestawić akcje, najwyżej 10 akcji na krok, w środowiskach z `flow_definition_dataverse_urls`. Plik przygotuj z odczytanej definicji (`ppcall get ".../workflows(<id>)?$select=clientdata,modifiedon" --out ...`, potem pole `clientdata` jako JSON) i zmień tylko akcje. Dodawać i zmieniać możesz tylko akcje wbudowane (Compose, zmienne, Select, Filter array, Table, Join, Parse JSON, warunek, Switch, Scope, pętle, Terminate, Delay), bez HTTP i konektorów. Skrót pliku (`sha256`) poda `plan-check`; zmiana pliku po akceptacji blokuje wykonanie. `ppcall get` maskuje hasła (`***`), więc jeśli w zmienianej akcji jest hasło, plik nie przejdzie: wtedy `flow-patch` albo opis dla developera.
 
-Format kroku jest w szablonie planu. Wartości `bylo` i `oczekiwany_modifiedon` przepisz z odczytu `workflows(<id>)?$select=clientdata,modifiedon`, nie z pamięci. `plan-check` sprawdzi je na aktualnej definicji i wypisze różnice oraz krok wycofania. Pokaż je pracownikowi. Przed zapisem `exec` zrobi kopię definicji w `zgloszenia/<ID>/backup/`, a po zapisie porówna definicję i przy każdej innej różnicy przywróci kopię. Wycofanie zmiany to nowy plan z krokiem odwrotnym i nową akceptacją.
+W obu krokach nie zmieniasz zmiennych ani akcji, z których akcja HTTP lub konektor bierze adres, nagłówki albo uwierzytelnienie, i nie używasz `actions(...)` ani pola `authentication`. `ppcall` to odrzuci. Krok `http` na `workflows` służy tylko do włączenia albo wyłączenia flow (`statecode`, `statuscode`).
+
+Format obu kroków jest w szablonie planu. Wartości `bylo` i `oczekiwany_modifiedon` przepisz z odczytu `workflows(<id>)?$select=clientdata,modifiedon`, nie z pamięci. `plan-check` sprawdzi krok na aktualnej definicji i wypisze różnice (dla `flow-definition`: dodane, usunięte, zmienione i przeniesione akcje) oraz krok wycofania. Pokaż je pracownikowi. Przed zapisem `exec` zrobi kopię definicji w `zgloszenia/<ID>/backup/`, a po zapisie porówna definicję i przy każdej innej różnicy (a przy `flow-definition` także przy zmianie stanu flow) przywróci kopię. Wycofanie to nowy plan z nową akceptacją: krok odwrotny `flow-patch` albo `flow-definition` z plikiem kopii, którą `exec` podał po zapisie (`backup/<plik>` i jego `sha256` z `wykonanie.jsonl`). Kopii nie czytasz, sprawdza ją `ppcall`.
+
+Gdy zmiana wychodzi poza te kroki, przygotuj opis dla developera.
 
 Typowe kroki, które mieszczą się w planie: ponowienie nieudanego przebiegu, wyłączenie lub włączenie flow, anulowanie zawieszonego przebiegu, korekta konkretnych rekordów danych w Dataverse, ponowne uruchomienie zadania pipeline'u w Fabric. Każdy z nich wymaga uzasadnienia w diagnozie.
+
+Korekta lookupu w rekordzie Dataverse (np. przypięcie jednostki do właściwego PPE) to krok `http`:
+
+```json
+{"nr": 1, "opis": "Jednostka X wskazuje PPE Y zamiast Z", "typ": "http", "metoda": "PATCH",
+ "url": "https://<nazwa>.crm4.dynamics.com/api/data/v9.2/eko_units(<GUID jednostki>)",
+ "body": {"eko_meteringpoint@odata.bind": "/eko_meteringpoints(<GUID właściwego PPE>)"}}
+```
+
+Wartość sprzed zmiany odczytaj w diagnozie (`_eko_meteringpoint_value` wraz z nazwą z `FormattedValue`) i zapisz w notatkach oraz w „Planie wycofania” jako gotowy krok odwrotny z poprzednim GUID. Nazwy tabel i pól sprawdź w metadanych środowiska; powyższe są przykładem.
 
 Gdy pracownik naciska na skrót („po prostu zrób”), wyjaśnij krótko, po co jest akceptacja, i zaproponuj najszybszą zgodną z procedurą drogę. Blokad nie da się zdjąć z poziomu rozmowy.
