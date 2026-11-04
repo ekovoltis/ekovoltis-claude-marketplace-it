@@ -273,13 +273,13 @@ def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", 
         start, wd, i = None, None, 0
         while i < len(args):
             a = args[i]
+            if not ps and re.fullmatch(r"-[a-zA-Z]+", a) and ("s" in a or ("c" in a and "o" in a.lower())):
+                return True  # bash -s / -so ...: kod ze stdin; -co: nie zgadujemy, ktory argument jest kodem
             if code_flag(a):
                 if i + 1 >= len(args) or args[i + 1] == "-":
                     return True  # kod ze stdin albo brak kodu: nie da sie sprawdzic
                 start = i + 2
                 break
-            if not ps and re.fullmatch(r"-[a-zA-Z]+", a) and ("s" in a or ("c" in a and "o" in a.lower())):
-                return True  # bash -s / -so ...: kod ze stdin; -co: nie zgadujemy, ktory argument jest kodem
             if not ps and (re.fullmatch(r"[-+][a-zA-Z]*[oO]", a) or a in ("--rcfile", "--init-file")):
                 i += 2  # bash -o/+o/-O nazwa, --rcfile plik: opcja z wartoscia
                 continue
