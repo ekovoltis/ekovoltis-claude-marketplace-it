@@ -1,5 +1,13 @@
 # Zmiany w pp-support
 
+## 1.2.3 (2026-11-04)
+
+- Nazwy kopii definicji są unikalne w całym stanie, a nie tylko w zgłoszeniu. Dwie kopie tego samego flow z różnych zgłoszeń zapisane w tej samej sekundzie miały tę samą nazwę, przez co odnośnik `backup/<plik>` w planie wycofania z innego zgłoszenia był niejednoznaczny i nie działał. Przy kilku kopiach o tej samej nazwie (sprzed poprawki) wybierana jest jedyna o skrócie z planu.
+- Ochrona stanu porównuje także rozwiniętą ścieżkę stanu (nazwy 8.3, np. `RUNNER~1`, i dowiązania). Bez tego Read i Grep na stanie przechodziły, gdy ścieżka stanu była podana w postaci 8.3 (CI na Windows).
+- W rozmowie dyżurnej rekurencja w zagnieżdżonej powłoce (`bash -c "grep -r … ~"`, `pwsh -Command "Get-ChildItem ~ -Recurse"`) jest blokowana; zakodowane polecenie (`-EncodedCommand`) też, bo nie da się go sprawdzić.
+- Przenoszenie starych kopii pomija zgłoszenie, którego katalog (a nie tylko `backup/`) jest dowiązaniem albo junction.
+- Testy dysku jako ścieżki (`/c`, `C:`) tylko na Windows. Testy 1.2.2 nie przechodziły w CI na Linuksie ani na Windows.
+
 ## 1.2.2 (2026-11-04)
 
 Po przeglądzie bezpieczeństwa 1.2.0.

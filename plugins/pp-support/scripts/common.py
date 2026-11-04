@@ -67,10 +67,11 @@ def legacy_backup_dir(folder: str | Path) -> Path:
     return Path(folder) / BACKUP_DIR_NAME
 
 
-def step_file_path(folder: str | Path, plik: str) -> Path:
+def step_file_path(folder: str | Path, plik: str, sha256: str | None = None) -> Path:
     """Plik kroku flow-definition: flow-...-nowa.json w zgloszeniu albo backup/<plik> rozwiazany do stanu.
     Kolejnosc dla kopii: kopie tego zgloszenia w stanie; przejsciowo kopia sprzed 1.2.2 w zgloszenia/<ID>/backup/;
-    kopia innego zgloszenia w stanie, gdy nazwa jest jednoznaczna (wycofanie w nowym zgloszeniu).
+    kopia innego zgloszenia w stanie, gdy nazwa jest jednoznaczna, a przy kilku plikach o tej nazwie
+    jedyny o skrocie sha256 z planu (wycofanie w nowym zgloszeniu).
     Nazwa kopii jest wczesniej sprawdzona (flow_definition_file_problem), a tresc wiaze sha256 z planu."""
     rel = str(plik).replace("\\", "/")
     if not rel.lower().startswith(BACKUP_DIR_NAME + "/"):
@@ -85,6 +86,8 @@ def step_file_path(folder: str | Path, plik: str) -> Path:
     if re.search(r"[/\*?\[\]]", name):
         return own
     others = [p for p in (state_dir() / BACKUP_STATE_DIR_NAME).glob(f"*/{name}") if p.is_file()]
+    if len(others) > 1 and sha256:
+        others = [p for p in others if file_sha256(p) == sha256]
     return others[0] if len(others) == 1 else own
 
 
@@ -847,7 +850,7 @@ def flow_definition_problems(step: dict, nr: int, folder: Path | None) -> list[s
         errs.append(f"krok {nr}: 'sha256' musi byc skrotem SHA-256 pliku (64 znaki, male litery)")
     if folder is None:
         return errs + [f"krok {nr}: nie mozna sprawdzic pliku definicji bez katalogu zgloszenia"]
-    path = step_file_path(folder, step["plik"])
+    path = step_file_path(folder, step["plik"], str(step.get("sha256", "")))
     if not path.is_file():
         where = "w kopiach zgloszenia" if str(step["plik"]).lower().startswith(BACKUP_DIR_NAME) else "w katalogu zgloszenia"
         return errs + [f"krok {nr}: brak pliku {step['plik']} {where}"]
