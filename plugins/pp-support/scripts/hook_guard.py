@@ -222,6 +222,27 @@ def _state_forms() -> set[str]:
     return forms
 
 
+PS_VALUE_OPTIONS = ("-executionpolicy", "-windowstyle", "-workingdirectory", "-outputformat", "-inputformat",
+                    "-version", "-configurationname", "-configurationfile", "-psconsolefile", "-settingsfile",
+                    "-custompipename")
+PS_VALUE_ALIASES = {"-ep", "-ex", "-wd", "-of", "-if", "-w", "-v", "-o"}
+PS_FLAG_OPTIONS = ("-noprofile", "-nologo", "-noninteractive", "-noexit", "-sta", "-mta", "-interactive",
+                   "-login", "-noprofileloadtime", "-help")
+PS_FLAG_ALIASES = {"-nop", "-noni", "-nol", "-l", "-?", "/?", "-h"}
+
+
+def _ps_option(arg: str) -> str | None:
+    """Rodzaj opcji pwsh/powershell (skroty jak w PowerShell): 'value', 'flag', 'file' albo None (nieznana)."""
+    name = arg.lower().split(":", 1)[0].replace("/", "-", 1) if arg.startswith("/") else arg.lower().split(":", 1)[0]
+    if name in ("-f", "-file") or (len(name) >= 3 and "-file".startswith(name)):
+        return "file"
+    if name in PS_VALUE_ALIASES or (len(name) >= 3 and any(o.startswith(name) for o in PS_VALUE_OPTIONS)):
+        return "value"
+    if name in PS_FLAG_ALIASES or (len(name) >= 3 and any(o.startswith(name) for o in PS_FLAG_OPTIONS)):
+        return "flag"
+    return None
+
+
 def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", full: str | None = None) -> bool:
     """Rekurencyjne polecenie, ktore obejmuje katalog stanu (dom, .claude, dysk) albo startuje z takiego cwd.
     full: cale polecenie; cd/Set-Location w innym segmencie zmienia cwd, xargs bierze sciezki z innego segmentu."""
@@ -231,14 +252,35 @@ def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", 
         ps = _prog(tokens[0]) in ("pwsh", "powershell")
         if ps and any(a == "-ec" or (len(a) >= 2 and "-encodedcommand".startswith(a)) for a in args):
             return True  # kodu zakodowanego nie da sie sprawdzic: w rozmowie dyzurnej odmowa
-        for i, a in enumerate(args):
-            code_flag = (a in SHELL_CODE_FLAGS or (len(a) >= 2 and "-command".startswith(a))) if ps                 else bool(re.fullmatch(r"-[a-z]*c", a))
-            if code_flag and i + 1 < len(tokens) - 1:
-                inner = " ".join(tokens[i + 2:])
-                inner_dialect = "powershell" if _prog(tokens[0]) in ("pwsh", "powershell") else "bash"
-                return any(recursive_reaches_state(tokenize(seg.strip(), inner_dialect), cwd, inner_dialect, inner)
-                           for seg in split_segments(inner, inner_dialect))
-        return False
+        inner_dialect = "powershell" if ps else "bash"
+        def code_flag(a: str) -> bool:
+            if ps:
+                return a in ("/c", "/command", "--command", "-cwa") or (len(a) >= 2 and (
+                    "-command".startswith(a) or "-commandwithargs".startswith(a)))
+            return bool(re.fullmatch(r"-[a-z]*c", a))
+
+        start = next((i + 2 for i, a in enumerate(args) if code_flag(a)), None)
+        if start is None:
+            i = 0
+            while i < len(args):
+                a = args[i]
+                if not a.startswith(("-", "/")):
+                    start = i + 1  # bez -Command/-c: powershell 5.1 traktuje reszte jak polecenie, bash jak skrypt
+                    break
+                if ps:
+                    kind = _ps_option(a)
+                    if kind == "file":
+                        return False  # -File skrypt.ps1: skrypt, nie polecenie
+                    if kind is None:
+                        return True  # nieznana opcja: nie zgadujemy, gdzie zaczyna sie polecenie
+                    i += 2 if kind == "value" and ":" not in a else 1
+                else:
+                    i += 1
+        if start is None or start >= len(tokens):
+            return False
+        inner = " ".join(tokens[start:])
+        return any(recursive_reaches_state(tokenize(seg.strip(), inner_dialect), cwd, inner_dialect, inner)
+                   for seg in split_segments(inner, inner_dialect))
     if not _is_recursive(tokens, "cmd" if cmd else dialect):
         return False
     if _covers_state(".", cwd):

@@ -1874,6 +1874,14 @@ try:
         ("pwsh -Command z gci -Recurse", 'pwsh -Command "Get-ChildItem ~ -Recurse"', "powershell", True),
         ("powershell -EncodedCommand", "powershell -EncodedCommand ZABpAHIA", "powershell", True),
         ("bash -c bez rekurencji", 'bash -c "ls ~"', "bash", False),
+        ("powershell bez -Command", "powershell Get-ChildItem ~ -Recurse", "powershell", True),
+        ("pwsh -NoProfile -c", 'pwsh -NoProfile -c "gci -r ~"', "powershell", True),
+        ("bash skrypt", "bash skrypt.sh", "bash", False),
+        ("powershell -ExecutionPolicy Bypass -Command", 'powershell -ExecutionPolicy Bypass -Command "gci ~ -Recurse"', "powershell", True),
+        ("powershell -ep Bypass bez -Command", "powershell -ep Bypass Get-ChildItem ~ -Recurse", "powershell", True),
+        ("powershell skrot -Execution", "powershell -Execution Bypass gci -r ~", "powershell", True),
+        ("powershell nieznana opcja", "powershell -Cos gci -r ~", "powershell", True),
+        ("pwsh -NoProfile -File", "pwsh -NoProfile -File skrypt.ps1", "powershell", False),
     ] + ([("find /c", "find /c -name x", "bash", True),  # dysk w Git Bash i cmd (tylko Windows)
           ("grep -r C:", "grep -r x C:", "bash", True)] if os.name == "nt" else []):
         toks = G.tokenize(G.split_segments(cmd, dialect)[-1].strip(), dialect)
