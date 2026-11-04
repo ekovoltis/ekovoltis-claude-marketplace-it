@@ -10,6 +10,7 @@ Kazdy blad wewnetrzny konczy sie odmowa (fail closed).
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -27,9 +28,66 @@ PS_MUTATION_RE = re.compile(
     r"Import|Invoke|Register|Unregister|Move|Rename|Restore|Approve|Deny|Suspend|Resume)-"
     r"(Az|Admin|PowerApp|Flow|PnP|Mg|Crm|Dataverse|Fabric|Sp)\w*", re.I)
 STATE_RE = re.compile(re.escape(C.STATE_DIR_NAME), re.I)
-# Proby dojscia do stanu z pominieciem pelnej nazwy: wzorce nazw, sklejanie nazwy z czesci, nazwy podkatalogow.
+# Proby dojscia do stanu z pominieciem pelnej nazwy: wzorce nazw i nazwy podkatalogow. Sprawdzane tylko,
+# gdy polecenie wskazuje katalog domowy albo .claude (HOME_ANCHOR_RE) lub cwd jest w domu albo w .claude,
+# zeby praca nad kodem pluginu i zwykle polecenia ze slowem "akceptacje" nie byly blokowane.
+# Sklejanie nazwy z czesci wylapuje _dequote + STATE_RE.
 STATE_EVASION_RE = re.compile(
-    r"support-st|pp-?supp[^\s/\\@]*[*?\[\]'\"+`]|\.claude[\\/]+[^\s\\/]*[*?\[]|akceptacje|[\\/]sesje([\\/*]|\b)", re.I)
+    r"support-st|pp-?supp[^\s/\\@]*[*?\[\]]|\.claude[\\/]+[^\s\\/]*[*?\[]|"
+    r"[\\/](akceptacje|sesje)([\\/*?\[]|\b)|\b(akceptacje|sesje)[\\/*?\[]", re.I)
+HOME_ANCHOR_RE = re.compile(
+    r"(?<![\w~])~(?=[/\\\s\"';&|)]|$)|\$\{?HOME\b|\$env:HOME|USERPROFILE|HOMEPATH|GetFolderPath|"
+    r"\.claude|(?<![\w.])\.[^\s/\\.]*[*?\[]|(?<![\w.])\.\.(?=[/\\\s\"';&|)]|$)", re.I)  # .c*, .[c]laude, ..
+GLOB_WORD_RE = re.compile(r"[^\s/\\;&|()<>=]*[*?\[][^\s/\\;&|()<>=]*")
+
+
+def _dequote(s: str) -> str:
+    """Polecenie bez cudzyslowow, backtickow i laczenia napisow: 'pp-support-sta''te', 'pp-' + 'x', 'pp-' 'x'."""
+    s = re.sub(r"['\"`]\s*[+.]?\s*['\"`]", "", s)  # sasiednie literaly (Python, Perl, PHP)
+    return re.sub(r"\s*\+\s*", "", re.sub(r"['\"`]", "", s))
+
+
+def _home() -> str:
+    return _norm_path(str(Path.home())).rstrip("/")
+
+
+def _home_cwd(cwd: str) -> bool:
+    c, home = _norm_path(cwd).rstrip("/"), _home()
+    return c == home or c == home + "/.claude" or c.startswith(home + "/.claude/")
+
+
+def _glob_under_home(text: str) -> bool:
+    """Wzorzec tuz za katalogiem domowym podanym wprost: C:\\Users\\x\\*\\pp-s*, /c/Users/x/.c?aude/..."""
+    t = re.sub(r"/+", "/", text.replace("\\", "/").lower())
+    t = re.sub(r"(?<![\w.:])/([a-z])/", r"\1:/", t)
+    return bool(re.search(re.escape(_home()) + r"/[^/\s]*[*?\[]", t))
+
+
+def _glob_hits_state(text: str) -> bool:
+    """Wzorzec z co najmniej dwoma znakami doslownymi, ktory pasuje do nazwy katalogu stanu (pp-s*, pp-supp?rt-st*)."""
+    for word in GLOB_WORD_RE.findall(text):
+        if len(re.sub(r"[*?]|\[[^\]]*\]?", "", word)) >= 2 and fnmatch.fnmatch(C.STATE_DIR_NAME, word.lower()):
+            return True
+    return False
+
+
+def touches_state(s: str, cwd: str, full: str | None = None) -> bool:
+    """s: segment polecenia; full: cale polecenie (kotwica z innego segmentu, np. cd ~/.claude && rm ...)."""
+    deq = _dequote(s)
+    state = _norm_path(str(C.state_base()))
+    if STATE_RE.search(s) or STATE_RE.search(deq) or state in _norm_path(s) or state in _norm_path(deq):
+        return True
+    try:
+        if Path(cwd).expanduser().resolve().is_relative_to(C.state_base().expanduser().resolve()):
+            return True
+    except (OSError, ValueError):
+        pass
+    whole = s if full is None else full
+    dwhole = _dequote(whole)
+    if not (HOME_ANCHOR_RE.search(whole) or HOME_ANCHOR_RE.search(dwhole) or _home_cwd(cwd)
+            or _glob_under_home(whole) or _glob_under_home(dwhole)):
+        return False
+    return bool(STATE_EVASION_RE.search(s) or STATE_EVASION_RE.search(deq) or _glob_hits_state(deq))
 
 PAC_READ = {
     ("help",), ("auth", "list"), ("auth", "who"), ("auth", "select"), ("org", "who"), ("org", "list"),
@@ -161,7 +219,8 @@ def out_targets(args: list[str]) -> list[str]:
     return [args[i + 1] for i, a in enumerate(args[:-1]) if a == "--out"]
 
 
-def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = True) -> tuple[str | None, str]:
+def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = True,
+                     full: str | None = None) -> tuple[str | None, str]:
     """Zwraca (decyzja, powod). None = brak decyzji (zwykle uprawnienia Claude Code)."""
     s = seg.strip()
     if not s:
@@ -199,7 +258,7 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
                    "config", ""}:
             return "allow", "pp-support: operacja tylko do odczytu lub na lokalnych plikach zgloszenia"
         return "deny", f"Nieznana komenda ppcall: {sub}"
-    if STATE_RE.search(s) or STATE_EVASION_RE.search(s) or _norm_path(str(C.state_base())) in _norm_path(s):
+    if touches_state(s, cwd, full):
         return "deny", "Stan akceptacji pp-support jest dostepny tylko dla ppcall i hookow."
     if not active:
         return None, ""
@@ -243,7 +302,7 @@ RANK = {"deny": 3, "ask": 2, None: 1, "allow": 0}
 
 def guard_command(cmd: str, cwd: str, dialect: str = "bash", active: bool = True) -> tuple[str | None, str]:
     segments = split_segments(cmd, dialect)
-    decisions = [classify_segment(seg, cwd, dialect, active) for seg in segments] or [(None, "")]
+    decisions = [classify_segment(seg, cwd, dialect, active, cmd) for seg in segments] or [(None, "")]
     if len(segments) > 1 and any(d == "ask" for d, _ in decisions):
         return "deny", "ppcall exec uruchamiaj jako osobne polecenie, bez laczenia z innymi."
     worst = max(decisions, key=lambda d: RANK[d[0]])

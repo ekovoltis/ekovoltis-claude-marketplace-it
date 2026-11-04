@@ -1140,6 +1140,38 @@ expect("stan: PowerShell sklejanie", guard_in("sesja-5", "PowerShell", {"command
 expect("uspiony: zwykle polecenie z .claude", guard_in("sesja-5", "Bash", {"command": "ls .claude/skills/*"}), None)
 expect("uspiony: aktualizacja pluginu", guard_in("sesja-5", "Bash",
        {"command": "claude plugin update pp-support@ekovoltis-it --scope user"}), None)
+# 1.1.1: praca nad kodem pluginu i zwykle polecenia nie sa traktowane jak obejscie ochrony stanu
+for label, tool, cmd in [
+        ("cd do pluginu w cudzyslowie", "Bash", f'cd "{ROOT}" && python tests/test_harness.py'),
+        ("cd do pluginu w apostrofach", "Bash", f"cd '{ROOT.as_posix()}' && git status"),
+        ("cd do pluginu w PowerShell", "PowerShell", f'Set-Location "{ROOT}"; git status'),
+        ("grep po slowie akceptacje", "Bash", "grep -rn akceptacje scripts/ tests/"),
+        ("commit z nazwa pluginu", "Bash", 'git commit -m "pp-support 1.1.1: poprawka straznika"'),
+        ("notatka heredoc", "Bash", "cat > notatka.md <<'EOF'\nakceptacje i sesje w pp-support, ~30 min\nEOF"),
+        ("katalog sesje w projekcie", "Bash", "ls docs/sesje/"),
+        ("glob w projekcie", "Bash", "ls plugins/pp-*/scripts/*.py"),
+        ("commit z .claude i akceptacjami", "Bash",
+         'git commit -m "pp-support: akceptacje, sesje i .claude/settings.local.json"')]:
+    expect(f"1.1.1 przechodzi: {label}", guard_in("sesja-5", tool, {"command": cmd}), None)
+for label, tool, cmd, cwd in [
+        ("cd ~/.claude i pp-s*", "Bash", "cd ~/.claude && rm -r pp-s*/akceptacje", OTHER),
+        ("$HOME i pp-supp*", "Bash", "rm -rf $HOME/.claude/pp-supp*", OTHER),
+        ("~ i .cl*", "Bash", "cd ~ && rm -r .cl*/pp-*/sesje", OTHER),
+        ("sklejone .claude i glob", "Bash", "cd && rm -r .cl''aude/pp-sup*", OTHER),
+        ("USERPROFILE w PowerShell", "PowerShell", 'Remove-Item "$env:USERPROFILE\\.claude\\pp-s*" -Recurse', OTHER),
+        ("sklejanie w cudzyslowach", "Bash", 'rm -r "pp-support-"\'state\'/sesje', OTHER),
+        ("glob pod .claude", "Bash", "rm -rf ~/.claude/p*", OTHER),
+        ("sciezka przez ..", "Bash", "rm -r ../../../.c*/pp-s*", OTHER),
+        (".c* bez .cl", "Bash", "cd /c/Users/x && rm -r .c*/pp-supp*/sesje", OTHER),
+        (".[c]laude", "Bash", "rm -r .[c]laude/pp-*/akceptacje/", OTHER),
+        ("glob za domem", "PowerShell", f"Remove-Item {Path.home()}\\*\\pp-supp* -Recurse", OTHER),
+        ("glob za domem (Git Bash)", "Bash",
+         "rm -rf /" + Path.home().as_posix().replace(":", "", 1).lower() + "/.c?aude/pp-supp*", OTHER),
+        ("sasiednie literaly", "Bash",
+         "python -c \"import shutil,os; shutil.rmtree(os.path.join('/x', 'pp-support-' 'state'))\"", OTHER),
+        ("akceptacje z cwd w .claude", "Bash", "rm -r */akceptacje", Path.home() / ".claude"),
+        ("cwd w katalogu stanu", "Bash", "rm -f *.json", TMP / "state/akceptacje")]:
+    expect(f"1.1.1 nadal deny: {label}", guard_in("sesja-5", tool, {"command": cmd}, cwd), "deny")
 guard_in("sesja-7", "Bash", {"command": "bash scripts/ppcall&&ls"})
 expect("ppcall&& aktywuje", C.session_active("sesja-7", OTHER), True)
 cfg_file = TMP / "state/config.json"
