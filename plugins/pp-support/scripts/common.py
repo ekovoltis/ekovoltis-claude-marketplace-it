@@ -1004,14 +1004,25 @@ def sensitive_hit(defs: set, sensitive: set) -> list[str]:
 def defines(name: str, action: dict) -> set:
     """Co ustawia akcja: wynik akcji o tej nazwie i zmienne, ktore inicjuje albo zmienia."""
     out = {("act", name.lower())}
-    inputs = action.get("inputs") if isinstance(action, dict) else None
+    inputs = _ci(action, "inputs")
     if isinstance(inputs, dict):
-        if isinstance(inputs.get("name"), str):
-            out.add(("var", inputs["name"].lower()))
-        for var in inputs.get("variables") or [] if isinstance(inputs.get("variables"), list) else []:
-            if isinstance(var, dict) and isinstance(var.get("name"), str):
-                out.add(("var", var["name"].lower()))
+        if isinstance(_ci(inputs, "name"), str):
+            out.add(("var", _ci(inputs, "name").lower()))
+        variables = _ci(inputs, "variables")
+        for var in variables if isinstance(variables, list) else []:
+            if isinstance(var, dict) and isinstance(_ci(var, "name"), str):
+                out.add(("var", _ci(var, "name").lower()))
     return out
+
+
+def _ci(obj, key: str):
+    """Wartosc klucza bez wzgledu na wielkosc liter (pierwsze trafienie); None, gdy brak albo obj nie jest dict."""
+    if not isinstance(obj, dict):
+        return None
+    for k, v in obj.items():
+        if str(k).lower() == key:
+            return v
+    return None
 
 
 def flow_definition_diff(old: dict, new: dict) -> tuple[list[dict], list[str]]:

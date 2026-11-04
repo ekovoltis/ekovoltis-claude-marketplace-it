@@ -1566,6 +1566,8 @@ for label, actions, target in [
     hit = C.sensitive_hit(C.defines(next(iter(names)), C.flatten_actions(d["properties"]["definition"]["actions"])[0][next(iter(names))][1]),
                           C.sensitive_refs(d))
     expect(f"zaleznosci domkniete: {label}", bool(hit), True)
+expect("defines: klucze Inputs/Name wielka litera",
+       C.defines("S", {"type": "SetVariable", "Inputs": {"Name": "Base", "value": "x"}}), {("act", "s"), ("var", "base")})
 expect("result() jako odczyt hasel", bool(C.SECRET_REF_RE.search("@result('Scope')")), True)
 
 
