@@ -34,7 +34,7 @@ STATE_RE = re.compile(re.escape(C.STATE_DIR_NAME), re.I)
 # Sklejanie nazwy z czesci wylapuje _dequote + STATE_RE.
 STATE_EVASION_RE = re.compile(
     r"support-st|pp-?supp[^\s/\\@]*[*?\[\]]|\.claude[\\/]+[^\s\\/]*[*?\[]|"
-    r"[\\/](akceptacje|sesje)([\\/*?\[]|\b)|\b(akceptacje|sesje)[\\/*?\[]", re.I)
+    r"[\\/](akceptacje|sesje|kopie)([\\/*?\[]|\b)|\b(akceptacje|sesje|kopie)[\\/*?\[]", re.I)
 HOME_ANCHOR_RE = re.compile(
     r"(?<![\w~])~(?=[/\\\s\"';&|)]|$)|\$\{?HOME\b|\$env:HOME|USERPROFILE|HOMEPATH|GetFolderPath|"
     r"\.claude|(?<![\w.])\.[^\s/\\.]*[*?\[]|(?<![\w.])\.\.(?=[/\\\s\"';&|)]|$)", re.I)  # .c*, .[c]laude, ..
@@ -98,6 +98,155 @@ def touches_backup(s: str, cwd: str) -> bool:
     if in_incident and re.search(rf"(^|[\s/\"'=]){C.BACKUP_DIR_NAME}([/\s*?\[]|$)", text):
         return True  # biezacy katalog to zgloszenie, odwolanie wzgledne do backup/
     return False
+
+
+# Polecenia przechodzace drzewo katalogow (przeszukiwanie, archiwizacja, kopiowanie rekurencyjne).
+RECURSIVE_PROGS = {"rg", "ag", "ack", "find", "fd", "tar", "zip", "7z", "7za", "robocopy", "xcopy", "rsync",
+                   "du", "tree", "compress-archive"}
+# Program -> wzorzec opcji wlaczajacej rekurencje (dla tych programow tylko z ta opcja).
+RECURSIVE_FLAGS = {
+    **dict.fromkeys(("grep", "egrep", "fgrep", "zgrep"),
+                    re.compile(r"^(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|--dereference-recursive)$")),
+    **dict.fromkeys(("cp", "scp"), re.compile(r"^(-[a-zA-Z]*[rRa][a-zA-Z]*|--recursive|--archive)$")),
+    **dict.fromkeys(("chmod", "chown"), re.compile(r"^(-[a-zA-Z]*R[a-zA-Z]*|--recursive)$")),
+    # ls i dir w PowerShell to Get-ChildItem (-r = -Recurse); w Git Bash ls -R, w cmd dir /s
+    **dict.fromkeys(("ls", "dir", "gci", "get-childitem", "copy-item", "cpi", "copy", "select-string", "sls"),
+                    re.compile(r"^(-[a-zA-Z]*R[a-zA-Z]*|-r(e(c(u(r(s(e)?)?)?)?)?)?(:\$?true)?|/s)$", re.I)),
+    "findstr": re.compile(r"^/s$", re.I),
+}
+HOME_VAR_RE = re.compile(r"^(~|\$\{?HOME\}?|\$\{?env:(HOME|USERPROFILE)\}?|%USERPROFILE%|\$USERPROFILE|"
+                         r"\$\{?env:HOMEDRIVE\}?\$\{?env:HOMEPATH\}?|%HOMEDRIVE%%HOMEPATH%)(?=/|$)", re.I)
+LS_BASH_FLAG_RE = re.compile(r"^(-[a-zA-Z]*R[a-zA-Z]*|--recursive)$")  # w bashu ls -r to odwrocona kolejnosc
+# Nakladki uruchamiajace inne polecenie: command grep -r ..., timeout 10 find ~, cmd /c dir /s ...
+WRAPPERS = {"command", "builtin", "env", "timeout", "nice", "nohup", "sudo", "xargs", "stdbuf", "time", "exec",
+            "ionice", "chrt", "doas", "busybox", "winpty"}
+CD_PROGS = {"cd", "pushd", "chdir", "set-location", "sl", "push-location"}
+
+
+def _prog(token: str) -> str:
+    return re.sub(r"\.(exe|cmd|bat)$", "", Path(token.replace("\\", "/")).name.lower())
+
+
+def _unwrap(tokens: list[str]) -> tuple[list[str], bool, bool]:
+    """Polecenie spod nakladek (command, env, timeout, xargs, cmd /c ...).
+    Zwraca (tokeny, czy byl xargs, czy polecenie wykona cmd.exe)."""
+    xargs = cmd = False
+    while tokens:
+        prog = _prog(tokens[0])
+        if prog in ("cmd",) and len(tokens) > 2 and tokens[1].lower() in ("/c", "/k"):
+            tokens, cmd = tokens[2:], True
+            if len(tokens) == 1:  # cmd /c "dir /s ..."
+                tokens = tokens[0].split()
+            continue
+        if prog not in WRAPPERS:
+            break
+        xargs = xargs or prog == "xargs"
+        rest = tokens[1:]
+        while rest and (rest[0].startswith("-") or "=" in rest[0] or re.fullmatch(r"[\d.]+[smhd]?", rest[0])):
+            rest = rest[1:]
+        tokens = rest
+    return tokens, xargs, cmd
+
+
+def _is_recursive(tokens: list[str], dialect: str = "bash") -> bool:
+    if not tokens:
+        return False
+    prog = _prog(tokens[0])
+    args = [t.lower() for t in tokens[1:]]
+    if prog in RECURSIVE_PROGS or any(a.startswith(("-recurse", "-depth")) for a in args):
+        return True
+    if prog in ("grep", "egrep", "fgrep", "zgrep") and (
+            "--directories=recurse" in args or "-drecurse" in args
+            or any(a in ("-d", "--directories") and nxt == "recurse" for a, nxt in zip(args, args[1:]))):
+        return True
+    flag = LS_BASH_FLAG_RE if dialect == "bash" and prog in ("ls", "dir") else RECURSIVE_FLAGS.get(prog)
+    return bool(flag) and any(flag.match(t) for t in tokens[1:])
+
+
+def _path_candidates(tokens: list[str]) -> list[str]:
+    """Argumenty mogace byc sciezka: bez opcji, a z opcji -Nazwa:wartosc i --nazwa=wartosc sama wartosc."""
+    out = []
+    for t in tokens:
+        if not t:
+            continue
+        if t.startswith("-"):
+            m = re.match(r"^-[^:=]+[:=](.+)$", t)
+            if m:
+                out.append(m.group(1))
+            continue
+        out.append(t)
+    return out
+
+
+def cd_targets(cmd: str, dialect: str = "bash") -> list[str]:
+    """Katalogi, do ktorych polecenie przechodzi (cd, pushd, Set-Location); samo cd to dom."""
+    targets = []
+    for seg in split_segments(cmd, dialect):
+        toks = tokenize(seg.strip(), dialect)
+        if toks and _prog(toks[0]) in CD_PROGS:
+            cand = _path_candidates(toks[1:])
+            targets.append(cand[0] if cand else "~")
+    return targets
+
+
+def _covers_state(path: str, cwd: str) -> bool:
+    """Sciezka (z ~, $HOME, wzorcem) jest katalogiem stanu, jego przodkiem albo lezy w stanie."""
+    p = HOME_VAR_RE.sub(lambda _: str(Path.home()).replace("\\", "/"), path.replace("\\", "/"))
+    parts = p.split("/")
+    for i, part in enumerate(parts):
+        if re.search(r"[*?\[]", part):  # wzorzec: liczy sie staly poczatek sciezki
+            parts = parts[:i]
+            break
+    p = "/".join(parts)
+    norm = _norm_path(p)
+    m = re.fullmatch(r"/([a-z])|([a-z]):", norm)  # /c (Git Bash) albo C: to caly dysk
+    if m:
+        norm = f"{m.group(1) or m.group(2)}:/"
+    if not re.match(r"^([a-z]:)?/", norm):
+        norm = _norm_path(os.path.join(cwd, p))
+    norm = _norm_path(os.path.normpath(norm)).rstrip("/") or "/"
+    state = _norm_path(str(C.state_base())).rstrip("/")
+    return state == norm or state.startswith(norm.rstrip("/") + "/") or norm.startswith(state + "/")
+
+
+def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", full: str | None = None) -> bool:
+    """Rekurencyjne polecenie, ktore obejmuje katalog stanu (dom, .claude, dysk) albo startuje z takiego cwd.
+    full: cale polecenie; cd/Set-Location w innym segmencie zmienia cwd, xargs bierze sciezki z innego segmentu."""
+    tokens, xargs, cmd = _unwrap(tokens)
+    if not _is_recursive(tokens, "cmd" if cmd else dialect):
+        return False
+    if _covers_state(".", cwd):
+        return True
+    whole = full or ""
+    if any(_covers_state(t, cwd) for t in cd_targets(whole, dialect)):
+        return True
+    candidates = _path_candidates(tokens[1:])
+    if xargs:
+        for seg in split_segments(whole, dialect):
+            candidates += _path_candidates(tokenize(seg.strip(), dialect)[1:])
+    return any(_covers_state(t, cwd) for t in candidates)
+
+
+def tool_path_in_state(path: str, cwd: str) -> bool:
+    """Read albo Grep: plik lub katalog w stanie, katalog stanu albo jego przodek (dom, .claude, dysk)."""
+    if not path:
+        return False
+    try:
+        p = str((Path(cwd) / Path(path).expanduser()).resolve())
+    except (OSError, ValueError):
+        return True
+    return bool(STATE_RE.search(p)) or _covers_state(p, cwd)
+
+
+def grep_reaches_legacy_backup(path: str, cwd: str) -> bool:
+    """Grep obejmujacy kopie sprzed 1.2.2 w zgloszenia/<ID>/backup/ (dopoki ppcall ich nie przeniesie)."""
+    try:
+        target = (Path(cwd) / Path(path or ".").expanduser()).resolve()
+        root = C.incidents_root(cwd).expanduser().resolve()
+        legacy = [d.resolve() for d in root.glob(f"*/{C.BACKUP_DIR_NAME}") if d.is_dir()] if root.is_dir() else []
+    except (OSError, ValueError):
+        return True
+    return any(d == target or d.is_relative_to(target) or target.is_relative_to(d) for d in legacy)
 
 
 def touches_state(s: str, cwd: str, full: str | None = None) -> bool:
@@ -277,7 +426,10 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
                 extra = (f" Wartosci: {values}. ppcall zapisze kopie, a po zapisie porowna definicje i przy "
                          "kazdej innej roznicy przywroci kopie.")
             if step.get("typ") == "flow-definition":
-                extra = (" Nowa definicja flow z pliku zgloszenia (moze dodawac, usuwac i przestawiac akcje). "
+                source = ("kopii definicji ze stanu pluginu (wycofanie)"
+                          if str(step.get("plik", "")).replace("\\", "/").lower().startswith(C.BACKUP_DIR_NAME + "/")
+                          else "pliku zgloszenia")
+                extra = (f" Nowa definicja flow z {source} (moze dodawac, usuwac i przestawiac akcje). "
                          "ppcall porowna ja z aktualna, zapisze kopie, a po zapisie przy kazdej roznicy albo "
                          "zmianie stanu flow przywroci kopie. Zmiany akcji pokazal ppcall plan-check.")
             return "ask", (f"ZMIANA W SRODOWISKU. Zgloszenie {args[1]}, krok {args[2]}: {step['opis']} | "
@@ -301,6 +453,10 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
                         "Do wycofania sluzy krok flow-definition z plikiem kopii.")
     if not active:
         return None, ""
+    if recursive_reaches_state(tokens, cwd, dialect, full):
+        return "deny", ("Przeszukiwanie, kopiowanie i archiwizacja calego katalogu domowego albo .claude sa "
+                        "zablokowane w rozmowie dyzurnej (obejmuja stan pp-support i kopie definicji flow). "
+                        "Wskaz konkretny katalog.")
     if TOKEN_RE.search(s):
         return "deny", ("Pobieranie tokenow i logowanie wykonuje czlowiek albo ppcall. "
                         "Do odczytu uzyj: ppcall get <url>.")
@@ -464,14 +620,32 @@ def activation_trigger(tool: str, tin: dict) -> str | None:
     return None
 
 
+def deny_logged(tool: str, path: str, reason: str) -> None:
+    try:
+        C.audit({"typ": "straznik", "narzedzie": tool, "decyzja": "deny", "powod": reason, "wejscie": path[:500]})
+    finally:
+        emit("deny", reason)
+
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
         tool = data.get("tool_name", "")
         tin = data.get("tool_input", {}) or {}
         cwd = data.get("cwd") or os.getcwd()
-        if tool == "Read" and "backup" not in str(tin.get("file_path") or "").lower():
-            emit(None)  # odczyt plikow poza kopiami: bez dostepu do stanu, zeby nie spowalniac innych projektow
+        if tool == "Read":
+            path = str(tin.get("file_path") or "")
+            if tool_path_in_state(path, cwd):
+                deny_logged(tool, path, "Stan pp-support (akceptacje, kopie definicji flow) czyta wylacznie ppcall. "
+                            "Kopie moga zawierac hasla; do wycofania sluzy krok flow-definition z plikiem kopii.")
+            if "backup" not in path.lower():
+                emit(None)  # zwykly odczyt: bez dostepu do stanu, zeby nie spowalniac innych projektow
+        if tool == "Grep":
+            path = str(tin.get("path") or "")
+            if tool_path_in_state(path or cwd, cwd) or grep_reaches_legacy_backup(path, cwd):
+                deny_logged(tool, path or cwd, "Grep obejmuje stan pp-support albo kopie definicji flow (moga "
+                            "zawierac hasla). Wskaz konkretny katalog projektu albo zgloszenia.")
+            emit(None)
         session = data.get("session_id")
         active = C.session_active(session, cwd)
         if not active:

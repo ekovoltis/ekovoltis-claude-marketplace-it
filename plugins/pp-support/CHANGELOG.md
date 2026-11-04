@@ -1,5 +1,15 @@
 # Zmiany w pp-support
 
+## 1.2.2 (2026-11-04)
+
+Po przeglądzie bezpieczeństwa 1.2.0.
+
+- Kopie definicji flow (mogą zawierać hasła) `ppcall exec` zapisuje w chronionym stanie, `~/.claude/pp-support-state/kopie/<ID>/`, a nie w `zgloszenia/<ID>/backup/`. W planie zostaje odnośnik `backup/<plik>`; `ppcall` i strażnik (sprawdzenie sha256) szukają kopii w stanie: w tym zgłoszeniu, a potem po jednoznacznej nazwie w innych.
+- Kopie sprzed 1.2.2 `ppcall plan-check` i `ppcall exec` przenoszą do stanu ze wszystkich zgłoszeń (oryginał znika po sprawdzeniu skrótu; plik o tej samej nazwie i innej treści zostaje z ostrzeżeniem; dowiązanie albo junction w miejscu `backup/` jest pomijane). Do czasu przeniesienia działa odczyt ze starego miejsca i dotychczasowe blokady `backup/`.
+- `wykonanie.jsonl` ma pola `kopia_plan` (`backup/<plik>`, do wpisania w plan wycofania) i `kopia_sha256`, także dla `flow-patch`.
+- Strażnik: narzędzia Read i Grep nie sięgają do stanu (zawsze, odmowa trafia do dziennika audytu); Grep obejmujący dom albo `.claude` jest blokowany (hook obejmuje teraz Grep). Wzorce na `kopie` obok `akceptacje` i `sesje` przy odniesieniu do domu (`cd ~/.claude && cat */kopie/*/*`). W rozmowie dyżurnej rekurencyjne `grep -r`, `rg`, `find`, `tar`, `zip`, `cp -r`, `Get-ChildItem -Recurse`/`-Depth`, `Compress-Archive` i podobne, obejmujące dom, `.claude` albo dysk, są blokowane, także po `cd`/`Set-Location` w tym samym poleceniu i pod nakładkami (`command`, `env`, `timeout`, `xargs`, `cmd /c`).
+- Krok `cli` z `az` tylko z jawnej listy: `logic workflow enable`/`disable`, `webapp restart`, `functionapp restart`. Polecenia `update`, `set`, `create` i każde inne polecenie `az` są odrzucane w hooku i w `ppcall`. Argumenty z pliku (`@plik`) i znaki interpretowane przez cmd.exe (`&`, `|`, `^`, `%`, cudzysłowy, spacje; `az` na Windows to `az.cmd`) są odrzucane dla `az` i `pac`.
+
 ## 1.2.1 (2026-11-04)
 
 - ITS-418: przy 403 z Graph dla zawartości witryny SharePoint i przy 401 z SharePoint REST `ppcall get` dopisuje wyjaśnienie: na jakim koncie działa (Azure CLI, nie konto z przeglądarki), kto nadaje odczyt i że REST nie przyjmuje tokenu Azure CLI (czytaj przez Graph). Konto bierze z `az account show`, bez dotykania tokenu.

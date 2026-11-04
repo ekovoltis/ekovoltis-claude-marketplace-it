@@ -51,8 +51,8 @@ pp-support/
 | odczyt wartości sekretów Key Vault | brak, poza zakresem pluginu |
 | narzędzia MCP do Dataverse, Power Platform, Fabric, SharePoint, Azure z operacją zapisu | krok planu |
 | zapis do stanu akceptacji, kodu pluginu, ustawień Claude Code, dziennika wykonania | brak |
-| zapis do kopii definicji w `zgloszenia/<ID>/backup/`, ich odczyt (narzędzie Read i polecenia powłoki) | kopie robi i czyta wyłącznie `ppcall` |
-| w planie: krok `http` zmieniający `workflows` inaczej niż włączenie albo wyłączenie flow, zapis w Power Automate API inny niż `start`, `stop`, `run`, `resubmit`, `cancel`, `$batch`, operacje na rozwiązaniach, `cli` z `import`, `upgrade`, `publish`, `deploy` | zmiana definicji krokami `flow-patch` i `flow-definition`; wdrożenia rozwiązań robi człowiek |
+| zapis i odczyt kopii definicji flow oraz całego stanu `~/.claude/pp-support-state/` (narzędzia Read, Grep, Write, Edit i polecenia powłoki); Grep obejmujący dom albo `.claude`; w rozmowie dyżurnej rekurencyjne przeszukiwanie, kopiowanie i archiwizacja domu albo `.claude` (`grep -r`, `rg`, `find`, `tar`, `Get-ChildItem -Recurse` itp.) | kopie robi i czyta wyłącznie `ppcall`; przeszukuj konkretny katalog |
+| w planie: krok `http` zmieniający `workflows` inaczej niż włączenie albo wyłączenie flow, zapis w Power Automate API inny niż `start`, `stop`, `run`, `resubmit`, `cancel`, `$batch`, operacje na rozwiązaniach, `cli` z argumentami ze znakami cmd.exe (`&`, `|`, `%`, cudzysłowy), `cli` z `az` innym niż `logic workflow enable`/`disable`, `webapp restart`, `functionapp restart` (lista `common.AZ_PLAN_COMMANDS`), `cli` z `import`, `upgrade`, `publish`, `deploy`, argumenty z pliku (`@plik`) | zmiana definicji krokami `flow-patch` i `flow-definition`; wdrożenia rozwiązań robi człowiek |
 | w planie: DELETE, argumenty delete/remove/purge/secret, zmiana definicji flow poza krokami `flow-patch` i `flow-definition`, hosty spoza listy | usuwanie zasobów, zmiany wyzwalaczy i połączeń robi człowiek |
 
 Dozwolone hosty dla tokenów: Graph, ARM, Power Automate, BAP, Power Platform API, Fabric, środowiska Dataverse (`*.crm*.dynamics.com`), SharePoint (`*.sharepoint.com`). Na inne adresy `ppcall` nie wyśle tokenu. Wyjątek bez tokenu: treść wejść i wyjść akcji z historii przebiegu (`inputsLink`/`outputsLink` na `*.environment.api.powerplatformusercontent.com`), którą `ppcall get` pobiera tylko metodą GET, bo podpis SAS jest w adresie. Do dziennika audytu adres trafia bez podpisu.
@@ -66,7 +66,7 @@ Plugin jest włączony na stałe, ale strażnik pilnuje tylko rozmów dyżurnych
 - rozmowa jest otwarta w folderze z ustawienia `support_dirs`,
 - napiszesz akceptację albo odwołanie w ich formacie (`AKCEPTUJĘ <ID> ...`, `ODWOŁUJĘ <ID>`) albo zaczniesz wiadomość od słowa „dyżur”.
 
-Wyjście z folderu dyżurnego w trakcie rozmowy nie wyłącza pilnowania. Znaczniki rozmów są usuwane po 30 dniach bez użycia. Hook strażnika uruchamia się też przy każdym odczycie pliku, ale poza kopiami w `backup/` kończy od razu.
+Wyjście z folderu dyżurnego w trakcie rozmowy nie wyłącza pilnowania. Znaczniki rozmów są usuwane po 30 dniach bez użycia. Hook strażnika uruchamia się też przy każdym odczycie pliku i przy Grep, ale poza stanem pluginu (i przejściowo kopiami w `backup/`) kończy od razu.
 
 Zawsze, także poza rozmową dyżurną, działają: akceptacja i wykonanie (`ppcall exec` sprawdza akceptację sam), ochrona stanu akceptacji, dziennika wykonania, wyników weryfikacji i kopii definicji. Bez identyfikatora rozmowy strażnik pilnuje zawsze.
 
@@ -75,7 +75,7 @@ Zawsze, także poza rozmową dyżurną, działają: akceptacja i wykonanie (`ppc
 - **API:** `ppcall get` czyta z API Salesbooka (tylko GET), gdy ustawione są `salesbook_api_url` i `salesbook_auth_flow`. Dane logowania Basic `ppcall` pobiera w swoim procesie z akcji HTTP flow integracji (`<adres Dataverse>|<workflowid>|<nazwa akcji>`), nie wypisuje ich i wysyła tylko pod adres API, bez przekierowań. Pliki dokumentów z `*.salesbook-ent.com` pobiera bez danych logowania. `curl` do Salesbooka blokuje strażnik.
 - **Aplikacja:** Claude czyta ją w przeglądarce pracownika, który loguje się sam.
 - **Przeglądarka (Claude in Chrome i przeglądarka w aplikacji):** narzędzia i akcje odczytu (tekst strony, zrzut ekranu, przewijanie, karty) bez pytań; każde inne działanie, także nowe narzędzie, za zgodą człowieka; wgrywanie plików zablokowane; adresy tylko http(s). Dotyczy każdej strony i każdej sesji, bo plugin jest włączony na stałe, więc przy testowaniu aplikacji w przeglądarce każde kliknięcie wymaga zgody.
-- **Hasła w odpowiedziach** (dane logowania w definicji flow, nagłówki `Authorization`, klucze w adresach, pola z hasłem i tokenem) `ppcall get` i `ppcall runs` zastępują `***`, na ekranie i w plikach. Kopie definicji w `backup/` są pełne, dlatego strażnik blokuje ich odczyt.
+- **Hasła w odpowiedziach** (dane logowania w definicji flow, nagłówki `Authorization`, klucze w adresach, pola z hasłem i tokenem) `ppcall get` i `ppcall runs` zastępują `***`, na ekranie i w plikach. Kopie definicji są pełne, dlatego leżą w chronionym stanie (`~/.claude/pp-support-state/kopie/<ID>/`), a strażnik blokuje ich odczyt.
 
 ## Zmiany w definicji flow (`flow-patch`, `flow-definition`)
 
@@ -89,7 +89,7 @@ Włącza go ustawienie `flow_patch_dataverse_urls`, osobno dla każdego środowi
 - Pytanie Claude Code przed wykonaniem pokazuje wartości „było” i „ma być”.
 - Plan musi mieć sekcje „Analiza wpływu” i „Test”.
 - `plan-check` sprawdza na aktualnej definicji `modifiedon`, ścieżki i wartości `bylo`, wypisuje różnice i krok wycofania.
-- `exec` sprawdza to samo ponownie, zapisuje kopię do `zgloszenia/<ID>/backup/`, wysyła `PATCH workflows(<id>)` z `If-Match`, a potem porównuje definicję z kopią. Różnica pod inną ścieżką przywraca kopię i kończy krok błędem.
+- `exec` sprawdza to samo ponownie, zapisuje kopię w stanie (`kopie/<ID>/`), wysyła `PATCH workflows(<id>)` z `If-Match`, a potem porównuje definicję z kopią. Różnica pod inną ścieżką przywraca kopię i kończy krok błędem.
 - Wycofanie to nowy plan z krokiem odwrotnym i nową akceptacją.
 
 ### `flow-definition`: dodanie, usunięcie, przestawienie akcji
@@ -112,8 +112,8 @@ Włącza go osobne ustawienie `flow_definition_dataverse_urls`.
   - powtórzone nazwy akcji i klucze różniące się tylko wielkością liter.
 - `ppcall get` maskuje hasła, więc pliku nowej definicji nie da się zbudować dla flow z hasłem w akcji, którą trzeba zmienić. Taki flow poprawia się krokiem `flow-patch` albo przez developera.
 - `plan-check` pokazuje dodane, usunięte, zmienione i przeniesione akcje razem z treścią dodanych i zmienionych akcji.
-- `exec`: kopia w `backup/` (jej skrót trafia do rejestru kopii w chronionym stanie), `PATCH` z `If-Match`, odczyt po zapisie. Gdy zapisana definicja różni się od pliku albo zmienił się stan flow, `ppcall` przywraca kopię.
-- Wycofanie to nowy plan z krokiem `flow-definition` wskazującym kopię (`backup/<plik>` i `sha256` z `wykonanie.jsonl`). Kopia z rejestru kopii może przywrócić usunięte akcje HTTP i konektorów, bo wraca do stanu sprzed zmiany; plik spoza rejestru podlega pełnym ograniczeniom.
+- `exec`: kopia w stanie, `kopie/<ID>/` (jej skrót trafia do rejestru kopii), `PATCH` z `If-Match`, odczyt po zapisie. Gdy zapisana definicja różni się od pliku albo zmienił się stan flow, `ppcall` przywraca kopię.
+- Wycofanie to nowy plan z krokiem `flow-definition` wskazującym kopię (`kopia_plan`, czyli `backup/<plik>`, i `kopia_sha256` z `wykonanie.jsonl`). `backup/<plik>` to odnośnik: `ppcall` i strażnik szukają kopii w stanie, najpierw w tym zgłoszeniu, potem po jednoznacznej nazwie w innych zgłoszeniach, więc wycofanie może być w nowym zgłoszeniu. Kopia z rejestru kopii może przywrócić usunięte akcje HTTP i konektorów, bo wraca do stanu sprzed zmiany; plik spoza rejestru podlega pełnym ograniczeniom.
 
 ### Korekty danych Dataverse
 
@@ -153,7 +153,7 @@ Zalecane uzupełnienie w managed settings Claude Code (do weryfikacji z bieżąc
 }
 ```
 
-Katalog `zgloszenia/` może zawierać dane klientów odczytane z Dataverse, a `backup/` pełne definicje flow. Trzymaj go lokalnie albo w miejscu z kontrolą dostępu, nie w ogólnodostępnym repozytorium.
+Katalog `zgloszenia/` może zawierać dane klientów odczytane z Dataverse, a stan pluginu (`kopie/`) pełne definicje flow. Kopie sprzed 1.2.2 w `zgloszenia/<ID>/backup/` (wszystkich zgłoszeń) `ppcall plan-check` i `ppcall exec` przenoszą do stanu przy pierwszym uruchomieniu. Trzymaj go lokalnie albo w miejscu z kontrolą dostępu, nie w ogólnodostępnym repozytorium.
 
 ## Wymagania na stanowisku
 

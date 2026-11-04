@@ -46,7 +46,9 @@
 ## Kroki
 <!-- Tylko operacje zmieniające. Odczyty i weryfikacje nie są krokami.
      typ "http": metoda POST, PATCH albo PUT, url na dozwolonym hoście, opcjonalnie body.
-     typ "cli": argv jako lista, program pac albo az.
+     typ "cli": argv jako lista, program pac albo az. Dla az tylko: logic workflow enable|disable,
+     webapp restart, functionapp restart (polecenie od razu po az, opcje po nim), bez argumentów @plik.
+     Argumenty tylko z liter, cyfr i znaków . : / = , + @ - _ (bez spacji, &, |, %, cudzysłowów).
      typ "flow-patch": zmiana wartości w istniejących akcjach jednego flow, najwyżej 5 zmian. Tekst pod
      inputs/parameters albo inputs/body; całe inputs akcji Compose, inputs/variables/<n>/value (InitializeVariable),
      inputs/value (SetVariable), inputs/select (Select), inputs/where i inputs/from (Query), inputs/columns (Table),
@@ -69,7 +71,7 @@
         "plik": "flow-<workflowid>-nowa.json", "sha256": "<skrót pliku podany przez plan-check>"}
        Plik to clientdata flow (JSON) ze zmienionymi tylko akcjami. Bez zmian wyzwalaczy, connectionReferences,
        $connections i połączeń akcji, bez nowych akcji HTTP i konektorów. Do wycofania: "plik":
-       "backup/<kopia z wykonanie.jsonl>". Krok działa tylko w środowiskach z ustawienia
+       kopia_plan z wykonanie.jsonl ("backup/<plik>", odnośnik do kopii w stanie pluginu), "sha256": kopia_sha256. Krok działa tylko w środowiskach z ustawienia
        flow_definition_dataverse_urls.
      DELETE, usuwanie, sekrety i inne zmiany definicji flow są odrzucane przez walidację. -->
 ```json

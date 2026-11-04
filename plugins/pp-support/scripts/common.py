@@ -53,7 +53,39 @@ def valid_id(incident_id: str) -> bool:
 
 VERIFY_LOG = "weryfikacja.jsonl"
 RESERVED_INCIDENT_FILES = {"plan.md", "wykonanie.jsonl", VERIFY_LOG}
-BACKUP_DIR_NAME = "backup"
+BACKUP_DIR_NAME = "backup"  # odnosnik w planie (backup/<plik>) i katalog kopii sprzed 1.2.2 w zgloszeniu
+BACKUP_STATE_DIR_NAME = "kopie"  # od 1.2.2 kopie leza w stanie: <stan>/kopie/<ID>/<plik>
+
+
+def backup_dir(incident_id: str) -> Path:
+    """Katalog kopii definicji zgloszenia w chronionym stanie (odczyt i zapis tylko ppcall)."""
+    return state_dir() / BACKUP_STATE_DIR_NAME / incident_id
+
+
+def legacy_backup_dir(folder: str | Path) -> Path:
+    """Kopie zapisane przed 1.2.2 w zgloszenia/<ID>/backup/. ppcall przenosi je do stanu."""
+    return Path(folder) / BACKUP_DIR_NAME
+
+
+def step_file_path(folder: str | Path, plik: str) -> Path:
+    """Plik kroku flow-definition: flow-...-nowa.json w zgloszeniu albo backup/<plik> rozwiazany do stanu.
+    Kolejnosc dla kopii: kopie tego zgloszenia w stanie; przejsciowo kopia sprzed 1.2.2 w zgloszenia/<ID>/backup/;
+    kopia innego zgloszenia w stanie, gdy nazwa jest jednoznaczna (wycofanie w nowym zgloszeniu).
+    Nazwa kopii jest wczesniej sprawdzona (flow_definition_file_problem), a tresc wiaze sha256 z planu."""
+    rel = str(plik).replace("\\", "/")
+    if not rel.lower().startswith(BACKUP_DIR_NAME + "/"):
+        return Path(folder) / rel
+    name = rel.split("/", 1)[1]
+    own = backup_dir(Path(folder).name) / name
+    legacy = legacy_backup_dir(folder) / name
+    if own.is_file():
+        return own
+    if legacy.is_file():
+        return legacy
+    if re.search(r"[/\*?\[\]]", name):
+        return own
+    others = [p for p in (state_dir() / BACKUP_STATE_DIR_NAME).glob(f"*/{name}") if p.is_file()]
+    return others[0] if len(others) == 1 else own
 
 
 def out_path_problem(cwd: str | Path, path: str) -> str | None:
@@ -384,6 +416,11 @@ GUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 MODIFIEDON_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 ALLOWED_HTTP_METHODS = {"POST", "PATCH", "PUT"}
 ALLOWED_CLI = {"pac", "az"}
+# Krok cli z az: tylko te polecenia (slowa przed pierwsza opcja). Wszystko inne, takze update/set/create,
+# jest odrzucane. Zmiana definicji Logic App albo flow nie jest krokiem cli (niezmiennik 6).
+CLI_ARG_RE = re.compile(r"[\w.:/=,+@-]+")
+AZ_PLAN_COMMANDS = {("logic", "workflow", "enable"), ("logic", "workflow", "disable"),
+                    ("webapp", "restart"), ("functionapp", "restart")}
 FORBIDDEN_ARG_RE = re.compile(r"delete|remove|purge|destroy|reset|secret|import|upgrade|publish|deploy", re.I)
 # Power Automate API: krok http moze tylko wlaczyc, wylaczyc, uruchomic, ponowic albo anulowac przebieg.
 FLOW_API_POST_ACTIONS = {"start", "stop", "run", "resubmit", "cancel"}
@@ -480,6 +517,20 @@ def step_problems(step: dict, expected_nr: int, folder: Path | None = None) -> l
                 errs.append(f"krok {expected_nr}: dozwolone programy to {sorted(ALLOWED_CLI)}")
             if argv[:2] == ["az", "rest"]:
                 errs.append(f"krok {expected_nr}: 'az rest' zastap krokiem typu http")
+            elif argv[0] == "az":
+                words = []
+                for a in argv[1:]:
+                    if a.startswith("-"):
+                        break
+                    words.append(a.lower())
+                if tuple(words) not in AZ_PLAN_COMMANDS:
+                    allowed = ", ".join("az " + " ".join(c) for c in sorted(AZ_PLAN_COMMANDS))
+                    errs.append(f"krok {expected_nr}: krok cli z az moze byc tylko jednym z: {allowed}")
+            if any(a.startswith("@") or "=@" in a for a in argv[1:]):
+                errs.append(f"krok {expected_nr}: argumenty z pliku (@plik) sa niedozwolone")
+            # az na Windows to az.cmd uruchamiany przez cmd.exe: &, |, ^, % i cudzyslowy bylyby interpretowane
+            if not all(CLI_ARG_RE.fullmatch(a) for a in argv[1:]):
+                errs.append(f"krok {expected_nr}: argumenty cli moga zawierac tylko litery, cyfry i znaki . : / = , + @ - _")
             if any(FORBIDDEN_ARG_RE.search(a) for a in argv):
                 errs.append(f"krok {expected_nr}: argumenty zawieraja operacje zabroniona (delete/remove/secret/...)")
     else:
@@ -756,7 +807,8 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
 # ---------------------------------------------------------------- flow-definition
 
 def flow_definition_file_problem(plik, workflowid: str) -> str | None:
-    """Plik nowej definicji: flow-<workflowid>-nowa.json w katalogu zgloszenia albo kopia z backup/."""
+    """Plik nowej definicji: flow-<workflowid>-nowa.json w katalogu zgloszenia albo kopia backup/<plik>
+    (kopia lezy w stanie, zob. step_file_path)."""
     if not isinstance(plik, str) or not plik:
         return "'plik' musi byc nazwa pliku w katalogu zgloszenia"
     p = plik.replace("\\", "/").lower()
@@ -795,9 +847,10 @@ def flow_definition_problems(step: dict, nr: int, folder: Path | None) -> list[s
         errs.append(f"krok {nr}: 'sha256' musi byc skrotem SHA-256 pliku (64 znaki, male litery)")
     if folder is None:
         return errs + [f"krok {nr}: nie mozna sprawdzic pliku definicji bez katalogu zgloszenia"]
-    path = Path(folder) / step["plik"]
+    path = step_file_path(folder, step["plik"])
     if not path.is_file():
-        return errs + [f"krok {nr}: brak pliku {step['plik']} w katalogu zgloszenia"]
+        where = "w kopiach zgloszenia" if str(step["plik"]).lower().startswith(BACKUP_DIR_NAME) else "w katalogu zgloszenia"
+        return errs + [f"krok {nr}: brak pliku {step['plik']} {where}"]
     actual = file_sha256(path)
     if str(step.get("sha256", "")) != actual:
         errs.append(f"krok {nr}: skrot pliku {step['plik']} to {actual}, a w planie {step.get('sha256')} "
