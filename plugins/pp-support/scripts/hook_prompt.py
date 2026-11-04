@@ -83,7 +83,7 @@ def handle(prompt: str, cwd: str) -> None:
     if not pp.exists():
         block(f"Nie ma planu {pp}. Akceptacja dotyczy planu w katalogu biezacej sesji.")
     text = pp.read_text(encoding="utf-8")
-    errs, steps = C.check_plan(text)
+    errs, steps = C.check_plan(text, pp.parent)
     if errs:
         block("Plan nie przechodzi walidacji, nie mozna go zaakceptowac: " + "; ".join(errs))
     current = C.plan_hash(text)

@@ -25,8 +25,11 @@ Pokaż pracownikowi tabelę wyników pogrupowaną według obszaru. Dla każdego 
 | 403 przy liście flow | użytkownik nie jest współwłaścicielem flow ani administratorem środowiska | administrator Power Platform |
 | 403 przy Dataverse | brak użytkownika lub roli w środowisku | administrator Power Platform |
 | 404 przy `flowruns` | tabela historii uruchomień niedostępna w środowisku | do wyjaśnienia, diagnoza przez API Power Automate |
-| 401 lub 403 przy SharePoint | Azure CLI nie ma zgody na zakres SharePoint | administrator Entra ID: własna rejestracja aplikacji z uprawnieniem delegowanym `Sites.Read.All` |
+| 403 przy „Graph: biblioteka dokumentów” (witryna 200) | konto ppcall (wiersz „konto ppcall”, zwykle konto serwisowe, nie konto z przeglądarki) nie ma dostępu do biblioteki; jeśli ma, tokenowi Azure CLI brakuje zakresów Sites/Files | właściciel witryny: odczyt dla konta ppcall; potem administrator Entra ID: własna aplikacja |
+| 401 przy „REST: witryna” (`invalid_request`) | SharePoint REST nie przyjmuje tokenu aplikacji Azure CLI; to nie jest brak uprawnień | nic do zrobienia teraz: pliki czytamy przez Graph; REST po wdrożeniu własnej aplikacji Entra |
 | 401 lub 403 przy Fabric | brak roli w obszarze roboczym albo blokada API w ustawieniach dzierżawy Fabric | administrator Fabric |
+
+`ppcall` działa na koncie, na którym zalogowano Azure CLI w konfiguracji dyżuru. To, co pracownik widzi w przeglądarce na swoim koncie, nie mówi nic o dostępie `ppcall`. Przy odmowie SharePoint `ppcall get` sam dopisuje wyjaśnienie z nazwą konta.
 
 Nie próbuj samodzielnie nadawać uprawnień, logować się ani zmieniać konfiguracji. Przygotuj pracownikowi listę rzeczy do załatwienia z administratorami, z dokładną treścią błędu z raportu.
 

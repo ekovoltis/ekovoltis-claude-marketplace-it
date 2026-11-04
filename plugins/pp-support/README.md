@@ -1,4 +1,4 @@
-# pp-support 1.1.0
+# pp-support 1.2.1
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -51,8 +51,9 @@ pp-support/
 | odczyt wartości sekretów Key Vault | brak, poza zakresem pluginu |
 | narzędzia MCP do Dataverse, Power Platform, Fabric, SharePoint, Azure z operacją zapisu | krok planu |
 | zapis do stanu akceptacji, kodu pluginu, ustawień Claude Code, dziennika wykonania | brak |
-| zapis do kopii definicji w `zgloszenia/<ID>/backup/` | kopie robi wyłącznie `ppcall exec` |
-| w planie: DELETE, argumenty delete/remove/purge/secret, zmiana definicji flow poza krokiem `flow-patch`, hosty spoza listy | usuwanie i przebudowę logiki robi człowiek, logika przez ścieżkę deweloperską (SWO) |
+| zapis do kopii definicji w `zgloszenia/<ID>/backup/`, ich odczyt (narzędzie Read i polecenia powłoki) | kopie robi i czyta wyłącznie `ppcall` |
+| w planie: krok `http` zmieniający `workflows` inaczej niż włączenie albo wyłączenie flow, zapis w Power Automate API inny niż `start`, `stop`, `run`, `resubmit`, `cancel`, `$batch`, operacje na rozwiązaniach, `cli` z `import`, `upgrade`, `publish`, `deploy` | zmiana definicji krokami `flow-patch` i `flow-definition`; wdrożenia rozwiązań robi człowiek |
+| w planie: DELETE, argumenty delete/remove/purge/secret, zmiana definicji flow poza krokami `flow-patch` i `flow-definition`, hosty spoza listy | usuwanie zasobów, zmiany wyzwalaczy i połączeń robi człowiek |
 
 Dozwolone hosty dla tokenów: Graph, ARM, Power Automate, BAP, Power Platform API, Fabric, środowiska Dataverse (`*.crm*.dynamics.com`), SharePoint (`*.sharepoint.com`). Na inne adresy `ppcall` nie wyśle tokenu. Wyjątek bez tokenu: treść wejść i wyjść akcji z historii przebiegu (`inputsLink`/`outputsLink` na `*.environment.api.powerplatformusercontent.com`), którą `ppcall get` pobiera tylko metodą GET, bo podpis SAS jest w adresie. Do dziennika audytu adres trafia bez podpisu.
 
@@ -76,18 +77,57 @@ Zawsze, także poza rozmową dyżurną, działają: akceptacja i wykonanie (`ppc
 - **Przeglądarka (Claude in Chrome i przeglądarka w aplikacji):** narzędzia i akcje odczytu (tekst strony, zrzut ekranu, przewijanie, karty) bez pytań; każde inne działanie, także nowe narzędzie, za zgodą człowieka; wgrywanie plików zablokowane; adresy tylko http(s). Dotyczy każdej strony i każdej sesji, bo plugin jest włączony na stałe, więc przy testowaniu aplikacji w przeglądarce każde kliknięcie wymaga zgody.
 - **Hasła w odpowiedziach** (dane logowania w definicji flow, nagłówki `Authorization`, klucze w adresach, pola z hasłem i tokenem) `ppcall get` i `ppcall runs` zastępują `***`, na ekranie i w plikach. Kopie definicji w `backup/` są pełne, dlatego strażnik blokuje ich odczyt.
 
-## Zmiana wartości w akcji flow (`flow-patch`)
+## Zmiany w definicji flow (`flow-patch`, `flow-definition`)
 
-Drobną, zdiagnozowaną poprawkę logiki (np. jedno wyrażenie w polu szablonu) można wykonać krokiem planu `flow-patch`. Krok jest domyślnie wyłączony. Włącza go ustawienie `flow_patch_dataverse_urls`, osobno dla każdego środowiska.
+Decyzja Michała Kaszty z 2026-11-04 (ITS-420): w supporcie automatów naprawy w definicji flow nie idą ścieżką deweloperską. Zdiagnozowaną naprawę w definicji flow dyżurny robi razem z Claude, z akceptacją, kopią i wycofaniem. Oba kroki są domyślnie wyłączone i działają tylko dla flow niezarządzanych.
 
-- Zmienić można tylko istniejącą wartość tekstową pod `inputs/parameters` albo `inputs/body` istniejącej akcji, całe `inputs` akcji Compose albo wartość zmiennej (`InitializeVariable`, `SetVariable`), najwyżej 5 zmian w jednym flow na krok. Typ akcji sprawdzany jest na aktualnej definicji. Wyzwalacze, `runAfter`, `type`, warunki (`expression`), połączenia i klucze przekierowujące wywołanie (`uri`, `method`, `headers`, `host`, `authentication`, `path`, `pathTemplate`, `function` i podobne) są odrzucane, tak samo flow z rozwiązań zarządzanych.
+### `flow-patch`: wartości w istniejących akcjach
+
+Włącza go ustawienie `flow_patch_dataverse_urls`, osobno dla każdego środowiska.
+
+- Zmienić można istniejącą wartość tekstową pod `inputs/parameters` albo `inputs/body` istniejącej akcji, a jako dowolny JSON: całe `inputs` akcji Compose, wartość zmiennej (`InitializeVariable`, `SetVariable`), `inputs/select` (Select), `inputs/where` i `inputs/from` (Filter array), `inputs/columns` (Table), `expression` (warunek, Until), `foreach`, `inputs/runStatus` i `inputs/runError` (Terminate) oraz `runAfter` dowolnej akcji. Najwyżej 5 zmian w jednym flow na krok. Typ akcji sprawdzany jest na aktualnej definicji, wartości JSON porównywane bez względu na kolejność kluczy. `runAfter` może wskazywać tylko akcje z tego samego zakresu, bez cykli. Wyzwalacze, `type`, połączenia i klucze przekierowujące wywołanie (`uri`, `method`, `headers`, `host`, `authentication`, `path`, `pathTemplate`, `function` i podobne) są odrzucane.
 - Pytanie Claude Code przed wykonaniem pokazuje wartości „było” i „ma być”.
 - Plan musi mieć sekcje „Analiza wpływu” i „Test”.
 - `plan-check` sprawdza na aktualnej definicji `modifiedon`, ścieżki i wartości `bylo`, wypisuje różnice i krok wycofania.
 - `exec` sprawdza to samo ponownie, zapisuje kopię do `zgloszenia/<ID>/backup/`, wysyła `PATCH workflows(<id>)` z `If-Match`, a potem porównuje definicję z kopią. Różnica pod inną ścieżką przywraca kopię i kończy krok błędem.
 - Wycofanie to nowy plan z krokiem odwrotnym i nową akceptacją.
 
+### `flow-definition`: dodanie, usunięcie, przestawienie akcji
+
+Włącza go osobne ustawienie `flow_definition_dataverse_urls`.
+
+- Krok wskazuje plik `zgloszenia/<ID>/flow-<workflowid>-nowa.json` z pełną nową definicją i jego skrót SHA-256. Skrót jest w planie, więc zmiana pliku po akceptacji blokuje wykonanie (sprawdza hook i `ppcall`).
+- `plan-check` porównuje plik z aktualną definicją i wypisuje dodane, usunięte, zmienione i przeniesione akcje (nazwa, typ, zakres).
+- Dodawać i zmieniać można tylko akcje wbudowane: Compose, warunek, Switch, Scope, pętle, zmienne, Parse JSON, Filter array, Select, Table, Join, Terminate, Delay i Expression.
+- Odrzucane:
+  - każda zmiana poza akcjami (wyzwalacze, `connectionReferences`, parametry, `$connections`);
+  - więcej niż 10 akcji na krok;
+  - zmiana typu akcji;
+  - dodanie lub zmiana akcji innego typu (HTTP, konektor, webhook, podrzędny flow, funkcja, kod);
+  - każda zmiana kluczy adresu, metody, nagłówków, uwierzytelnienia i połączenia;
+  - zmiana, dodanie lub usunięcie akcji albo zmiennej, z której akcja wysyłająca bierze adres, nagłówki albo uwierzytelnienie;
+  - wyrażenia `actions(...)` i pole `authentication`;
+  - tekst `***` w zmienianych akcjach;
+  - `runAfter` poza zakresem albo z cyklem;
+  - powtórzone nazwy akcji i klucze różniące się tylko wielkością liter.
+- `ppcall get` maskuje hasła, więc pliku nowej definicji nie da się zbudować dla flow z hasłem w akcji, którą trzeba zmienić. Taki flow poprawia się krokiem `flow-patch` albo przez developera.
+- `plan-check` pokazuje dodane, usunięte, zmienione i przeniesione akcje razem z treścią dodanych i zmienionych akcji.
+- `exec`: kopia w `backup/` (jej skrót trafia do rejestru kopii w chronionym stanie), `PATCH` z `If-Match`, odczyt po zapisie. Gdy zapisana definicja różni się od pliku albo zmienił się stan flow, `ppcall` przywraca kopię.
+- Wycofanie to nowy plan z krokiem `flow-definition` wskazującym kopię (`backup/<plik>` i `sha256` z `wykonanie.jsonl`). Kopia z rejestru kopii może przywrócić usunięte akcje HTTP i konektorów, bo wraca do stanu sprzed zmiany; plik spoza rejestru podlega pełnym ograniczeniom.
+
+### Korekty danych Dataverse
+
+Korekta lookupu (np. `eko_meteringpoint@odata.bind`) to zwykły krok `http` PATCH na rekordzie. Wartość sprzed zmiany odczytuje się w diagnozie i opisuje w planie wycofania. Wzorzec jest w skillu `zgloszenie`.
+
 Zapis `clientdata` włączonego flow nie wymaga wyłączania: flow zostaje włączony, a Power Automate od razu pokazuje nową definicję (sprawdzone na produkcji 02.11.2026 na trzech flow).
+
+## SharePoint: tylko odczyt przez Graph, na koncie Azure CLI
+
+`ppcall` czyta SharePoint na koncie, na którym zalogowano Azure CLI w konfiguracji dyżuru (test dostępów pokazuje je w wierszu „konto ppcall”). To konto, a nie konto z przeglądarki, musi mieć odczyt w witrynie (stan z 04.11.2026: e2vitservice bez dostępu do BazadokumentowEkovoltis, ITS-418).
+
+- Graph: witryna działa. Biblioteki, pliki (`/sites/<id witryny>/drive/root:/<folder>:/children`; id witryny z `/sites/<host>:/sites/<witryna>`, bo ścieżki pliku nie da się dopisać do adresu witryny podanego ścieżką) i wersje (`/drive/items/<id>/versions`) działają, gdy konto ppcall ma dostęp i token Azure CLI obejmuje zawartość witryny. Do sprawdzenia po nadaniu dostępu.
+- SharePoint REST (`/_api`): token aplikacji Azure CLI jest odrzucany (401 `invalid_request`). REST będzie dostępny po wdrożeniu własnej aplikacji Entra (wniosek z 16.10.2026).
+- Przy 403 z Graph i 401 z REST `ppcall get` dopisuje wyjaśnienie z nazwą konta zamiast samego kodu błędu.
 
 ## Ograniczenia, które trzeba znać
 

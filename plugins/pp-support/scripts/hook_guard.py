@@ -10,6 +10,7 @@ Kazdy blad wewnetrzny konczy sie odmowa (fail closed).
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -27,9 +28,98 @@ PS_MUTATION_RE = re.compile(
     r"Import|Invoke|Register|Unregister|Move|Rename|Restore|Approve|Deny|Suspend|Resume)-"
     r"(Az|Admin|PowerApp|Flow|PnP|Mg|Crm|Dataverse|Fabric|Sp)\w*", re.I)
 STATE_RE = re.compile(re.escape(C.STATE_DIR_NAME), re.I)
-# Proby dojscia do stanu z pominieciem pelnej nazwy: wzorce nazw, sklejanie nazwy z czesci, nazwy podkatalogow.
+# Proby dojscia do stanu z pominieciem pelnej nazwy: wzorce nazw i nazwy podkatalogow. Sprawdzane tylko,
+# gdy polecenie wskazuje katalog domowy albo .claude (HOME_ANCHOR_RE) lub cwd jest w domu albo w .claude,
+# zeby praca nad kodem pluginu i zwykle polecenia ze slowem "akceptacje" nie byly blokowane.
+# Sklejanie nazwy z czesci wylapuje _dequote + STATE_RE.
 STATE_EVASION_RE = re.compile(
-    r"support-st|pp-?supp[^\s/\\@]*[*?\[\]'\"+`]|\.claude[\\/]+[^\s\\/]*[*?\[]|akceptacje|[\\/]sesje([\\/*]|\b)", re.I)
+    r"support-st|pp-?supp[^\s/\\@]*[*?\[\]]|\.claude[\\/]+[^\s\\/]*[*?\[]|"
+    r"[\\/](akceptacje|sesje)([\\/*?\[]|\b)|\b(akceptacje|sesje)[\\/*?\[]", re.I)
+HOME_ANCHOR_RE = re.compile(
+    r"(?<![\w~])~(?=[/\\\s\"';&|)]|$)|\$\{?HOME\b|\$env:HOME|USERPROFILE|HOMEPATH|GetFolderPath|"
+    r"\.claude|(?<![\w.])\.[^\s/\\.]*[*?\[]|(?<![\w.])\.\.(?=[/\\\s\"';&|)]|$)", re.I)  # .c*, .[c]laude, ..
+GLOB_WORD_RE = re.compile(r"[^\s/\\;&|()<>=]*[*?\[][^\s/\\;&|()<>=]*")
+# Zawsze, bez kotwicy: wzorzec po pp-supp (jak w 1.1.0) i fragment nazwy w kodzie podanym interpreterowi
+# (python -c "'%s-state' % 'pp-support'"), bo zmienna albo formatowanie napisu omija kotwice.
+STATE_GLOB_ALWAYS_RE = re.compile(r"pp-?supp[^\s/\\@]*[*?\[\]]", re.I)
+INLINE_CODE_RE = re.compile(r"(^|[\s/\\])(python[\d.]*|py|node|perl|ruby|pwsh|powershell)(\.exe)?\s"
+                            r"(.*\s)?-(c|e|Command|EncodedCommand)\b", re.I)
+STATE_PART_RE = re.compile(r"pp-?supp|support-st", re.I)
+
+
+def _dequote(s: str) -> str:
+    """Polecenie bez cudzyslowow, backtickow i laczenia napisow: 'pp-support-sta''te', 'pp-' + 'x', 'pp-' 'x'."""
+    s = re.sub(r"['\"`]\s*[+.]?\s*['\"`]", "", s)  # sasiednie literaly (Python, Perl, PHP)
+    return re.sub(r"\s*\+\s*", "", re.sub(r"['\"`]", "", s))
+
+
+def _home() -> str:
+    return _norm_path(str(Path.home())).rstrip("/")
+
+
+def _home_cwd(cwd: str) -> bool:
+    c, home = _norm_path(cwd).rstrip("/"), _home()
+    return c == home or c == home + "/.claude" or c.startswith(home + "/.claude/")
+
+
+def _glob_under_home(text: str) -> bool:
+    """Wzorzec tuz za katalogiem domowym podanym wprost: C:\\Users\\x\\*\\pp-s*, /c/Users/x/.c?aude/..."""
+    t = re.sub(r"/+", "/", text.replace("\\", "/").lower())
+    t = re.sub(r"(?<![\w.:])/([a-z])/", r"\1:/", t)
+    return bool(re.search(re.escape(_home()) + r"/[^/\s]*[*?\[]", t))
+
+
+def _glob_hits_state(text: str, min_literal: int = 2) -> bool:
+    """Wzorzec z co najmniej min_literal znakami doslownymi, ktory pasuje do nazwy katalogu stanu (pp-s*, *-state)."""
+    for word in GLOB_WORD_RE.findall(text):
+        if len(re.sub(r"[*?]|\[[^\]]*\]?", "", word)) >= min_literal and fnmatch.fnmatch(C.STATE_DIR_NAME, word.lower()):
+            return True
+    return False
+
+
+def touches_backup(s: str, cwd: str) -> bool:
+    """Polecenie powloki siegajace do zgloszenia/<ID>/backup (odczyt, kopiowanie, zapis)."""
+    text = _dequote(s).replace("\\", "/").lower()
+    if re.search(rf"{C.INCIDENTS_DIR_NAME}/[^/\s]+/{C.BACKUP_DIR_NAME}(/|[\s*?\[]|$)", text):
+        return True
+    try:
+        root = _norm_path(str(C.incidents_root(cwd))).rstrip("/")
+        here = _norm_path(str(Path(cwd).resolve())).rstrip("/")
+    except (OSError, ValueError):
+        return True
+    if root and root in _norm_path(text) and f"/{C.BACKUP_DIR_NAME}" in text:
+        return True
+    rel = here[len(root) + 1:].split("/") if here.startswith(root + "/") else []
+    in_backup = (len(rel) >= 2 and rel[1] == C.BACKUP_DIR_NAME) or bool(
+        re.search(rf"/{C.INCIDENTS_DIR_NAME}/[^/]+/{C.BACKUP_DIR_NAME}(/|$)", here))
+    in_incident = len(rel) == 1 or bool(re.search(rf"/{C.INCIDENTS_DIR_NAME}/[^/]+$", here))
+    if in_backup:
+        return True  # biezacy katalog to kopia
+    if in_incident and re.search(rf"(^|[\s/\"'=]){C.BACKUP_DIR_NAME}([/\s*?\[]|$)", text):
+        return True  # biezacy katalog to zgloszenie, odwolanie wzgledne do backup/
+    return False
+
+
+def touches_state(s: str, cwd: str, full: str | None = None) -> bool:
+    """s: segment polecenia; full: cale polecenie (kotwica z innego segmentu, np. cd ~/.claude && rm ...)."""
+    deq = _dequote(s)
+    state = _norm_path(str(C.state_base()))
+    if STATE_RE.search(s) or STATE_RE.search(deq) or state in _norm_path(s) or state in _norm_path(deq):
+        return True
+    try:
+        if Path(cwd).expanduser().resolve().is_relative_to(C.state_base().expanduser().resolve()):
+            return True
+    except (OSError, ValueError):
+        pass
+    if (STATE_GLOB_ALWAYS_RE.search(s) or STATE_GLOB_ALWAYS_RE.search(deq) or _glob_hits_state(deq, 5)
+            or (INLINE_CODE_RE.search(s) and STATE_PART_RE.search(deq))):
+        return True
+    whole = s if full is None else full
+    dwhole = _dequote(whole)
+    if not (HOME_ANCHOR_RE.search(whole) or HOME_ANCHOR_RE.search(dwhole) or _home_cwd(cwd)
+            or _glob_under_home(whole) or _glob_under_home(dwhole)):
+        return False
+    return bool(STATE_EVASION_RE.search(s) or STATE_EVASION_RE.search(deq) or _glob_hits_state(deq))
 
 PAC_READ = {
     ("help",), ("auth", "list"), ("auth", "who"), ("auth", "select"), ("org", "who"), ("org", "list"),
@@ -161,7 +251,8 @@ def out_targets(args: list[str]) -> list[str]:
     return [args[i + 1] for i, a in enumerate(args[:-1]) if a == "--out"]
 
 
-def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = True) -> tuple[str | None, str]:
+def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = True,
+                     full: str | None = None) -> tuple[str | None, str]:
     """Zwraca (decyzja, powod). None = brak decyzji (zwykle uprawnienia Claude Code)."""
     s = seg.strip()
     if not s:
@@ -181,10 +272,14 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
                 return "deny", reason
             extra = ""
             if step.get("typ") == "flow-patch":
-                values = " | ".join(f"{C.flow_patch_label(c['sciezka'])}: bylo {c['bylo'][:160]!r}, "
-                                    f"ma byc {c['ma_byc'][:160]!r}" for c in step["zmiany"])
+                values = " | ".join(f"{C.flow_patch_label(c['sciezka'])}: bylo {C.value_text(c['bylo'])!r}, "
+                                    f"ma byc {C.value_text(c['ma_byc'])!r}" for c in step["zmiany"])
                 extra = (f" Wartosci: {values}. ppcall zapisze kopie, a po zapisie porowna definicje i przy "
                          "kazdej innej roznicy przywroci kopie.")
+            if step.get("typ") == "flow-definition":
+                extra = (" Nowa definicja flow z pliku zgloszenia (moze dodawac, usuwac i przestawiac akcje). "
+                         "ppcall porowna ja z aktualna, zapisze kopie, a po zapisie przy kazdej roznicy albo "
+                         "zmianie stanu flow przywroci kopie. Zmiany akcji pokazal ppcall plan-check.")
             return "ask", (f"ZMIANA W SRODOWISKU. Zgloszenie {args[1]}, krok {args[2]}: {step['opis']} | "
                            f"{C.step_summary(step)}.{extra} Zatwierdz tylko jesli to dokladnie zaakceptowany krok.")
         if sub in ("get", "runs"):
@@ -196,11 +291,14 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
                 if decision:
                     return decision, reason
         if sub in {"get", "runs", "verify", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke",
-                   "config", ""}:
+                   "config", "konfiguracja", ""}:
             return "allow", "pp-support: operacja tylko do odczytu lub na lokalnych plikach zgloszenia"
         return "deny", f"Nieznana komenda ppcall: {sub}"
-    if STATE_RE.search(s) or STATE_EVASION_RE.search(s) or _norm_path(str(C.state_base())) in _norm_path(s):
+    if touches_state(s, cwd, full):
         return "deny", "Stan akceptacji pp-support jest dostepny tylko dla ppcall i hookow."
+    if touches_backup(s, cwd):
+        return "deny", ("Kopie definicji flow w backup/ czyta i zapisuje wylacznie ppcall (moga zawierac hasla). "
+                        "Do wycofania sluzy krok flow-definition z plikiem kopii.")
     if not active:
         return None, ""
     if TOKEN_RE.search(s):
@@ -243,7 +341,7 @@ RANK = {"deny": 3, "ask": 2, None: 1, "allow": 0}
 
 def guard_command(cmd: str, cwd: str, dialect: str = "bash", active: bool = True) -> tuple[str | None, str]:
     segments = split_segments(cmd, dialect)
-    decisions = [classify_segment(seg, cwd, dialect, active) for seg in segments] or [(None, "")]
+    decisions = [classify_segment(seg, cwd, dialect, active, cmd) for seg in segments] or [(None, "")]
     if len(segments) > 1 and any(d == "ask" for d, _ in decisions):
         return "deny", "ppcall exec uruchamiaj jako osobne polecenie, bez laczenia z innymi."
     worst = max(decisions, key=lambda d: RANK[d[0]])

