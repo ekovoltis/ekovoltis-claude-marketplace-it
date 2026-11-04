@@ -886,6 +886,44 @@ def _folder_ok(folder: str) -> bool:
             and ".." not in folder.split("/") and "//" not in folder)
 
 
+def derived_consumers_problem(definition: dict, start: list[str]) -> str | None:
+    """Dokad trafia wynik akcji odczytu (i wszystko z niego wyliczone): wolno tylko do akcji wbudowanych
+    (FLOW_SAFE_TYPES) i do tresci (body) akcji zapisu SharePoint. Kazde inne uzycie wylacza wyjatek."""
+    try:
+        actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
+    except KeyError:
+        return "nie mozna odczytac akcji flow"
+    derived = {("act", n.lower()) for n in start}
+    changed = True
+    while changed:
+        changed = False
+        for n, (_, a) in actions.items():
+            key = ("act", n.lower())
+            if key in derived:
+                continue
+            refs = _refs(canon(_own_body(a)))
+            if ANY_REF in refs:
+                return f"akcja {n} ma odwolanie z nazwa wyliczana"
+            if not refs & derived:
+                continue
+            t = str(action_type(a) or "").lower()
+            if t in FLOW_SAFE_TYPES:
+                derived |= {key} | {r for r in defines(n, a) if r[0] == "var"}
+            elif sp_write_action(a):
+                rest = copy.deepcopy(_own_body(a))
+                params = _ci(_ci(rest, "inputs"), "parameters")
+                if isinstance(params, dict):
+                    for k in [k for k in params if str(k).lower() == "body"]:
+                        params[k] = ""
+                if _refs(canon(rest)) & derived:
+                    return f"wynik odczytu trafia do parametru akcji {n} innego niz tresc pliku"
+                continue  # wynik zapisu (id, sciezka nowego pliku) zalezy od folderu i nazwy, nie od tresci
+            else:
+                return f"wynik odczytu trafia do akcji {n} ({action_type(a)}), ktora nie jest akcja wbudowana ani zapisem tresci SharePoint"
+            changed = True
+    return None
+
+
 def sp_filename_exception(definition: dict, ch: dict) -> tuple[dict | None, str | None]:
     """Czy zmiana miesci sie w wyjatku. (opis, None) gdy tak; (None, powod) gdy zmiana dotyczy akcji odczytu
     albo jej zmiennej, ale warunki nie sa spelnione; (None, None) gdy to w ogole nie ten przypadek."""
@@ -917,6 +955,9 @@ def sp_filename_exception(definition: dict, ch: dict) -> tuple[dict | None, str 
             return None, bad
         if ("act", name.lower()) in sensitive_refs(definition) or ANY_REF in sensitive_refs(definition):
             return None, f"wynik akcji {name} trafia do adresu, identyfikatora albo uwierzytelnienia innej akcji"
+        problem = derived_consumers_problem(definition, [name])
+        if problem:
+            return None, problem
         return {"akcje": [name], "dataset": found[0], "folder": old_dir, "plik": new_file, "stary_plik": old_file}, None
     # 2. Wartosc zmiennej uzytej jako ostatni segment path akcji odczytu
     t = action_type(target)
@@ -968,6 +1009,9 @@ def sp_filename_exception(definition: dict, ch: dict) -> tuple[dict | None, str 
         if ("act", aname.lower()) in sensitive:
             return None, (f"wynik akcji {aname} trafia do adresu, identyfikatora albo uwierzytelnienia innej akcji "
                           "(np. Http, DeleteFile), wiec zmiana pliku zmienilaby jej cel")
+    problem = derived_consumers_problem(definition, users)
+    if problem:
+        return None, problem
     every_text = [canon(_own_body(a)) for n, (_, a) in actions.items()]
     for aname in setters:
         if any(("act", aname.lower()) in _refs(t) for t in every_text):

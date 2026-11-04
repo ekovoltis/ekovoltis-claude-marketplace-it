@@ -2270,6 +2270,28 @@ expect("result(zakres): bez odwolania przechodzi", live5(OK5, variant(lambda a: 
 cfg["flow_patch_dataverse_urls"] = []
 C.save_config(cfg)
 
+print("34. 1.3.0: wynik odczytu tylko do akcji wbudowanych i tresci zapisu SharePoint")
+cfg = C.load_config()
+cfg["flow_patch_dataverse_urls"] = [DV]
+C.save_config(cfg)
+MAIL = {"type": "OpenApiConnection", "runAfter": {}, "inputs": {
+    "host": {"connectionName": "shared_office365", "operationId": "SendEmailV2",
+             "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"},
+    "parameters": {"emailMessage/To": "@{body('Get_file_content_using_path')?['adresat']}", "emailMessage/Body": "x"}}}
+for label, change in [
+    ("odbiorca maila z wyniku odczytu", lambda a: a.update(Mail=copy.deepcopy(MAIL))),
+    ("odbiorca maila przez Compose", lambda a: a.update(
+        Cmp={"type": "Compose", "runAfter": {}, "inputs": "@body('Get_file_content_using_path')"},
+        Mail={**copy.deepcopy(MAIL), "inputs": {**MAIL["inputs"], "parameters": {"emailMessage/To": "@{outputs('Cmp')}"}}})),
+    ("nazwa pliku w CreateFile z wyniku odczytu", lambda a: a["Create_file"]["inputs"]["parameters"].update(
+        name="@{body('Get_file_content_using_path')?['n']}")),
+]:
+    expect(f"wynik odczytu: odrzucone: {label}", bool(live5(OK5, variant(change))), True)
+expect("wynik odczytu: tresc CreateFile i Compose dozwolone", live5(OK5, variant(lambda a: a.update(
+    Cmp={"type": "Compose", "runAfter": {}, "inputs": "@body('Get_file_content_using_path')"}))), [])
+cfg["flow_patch_dataverse_urls"] = []
+C.save_config(cfg)
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

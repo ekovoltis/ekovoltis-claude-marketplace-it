@@ -13,6 +13,7 @@ ITS-418, decyzja Michała Kaszty z 2026-11-04 (wariant B).
   - W akcjach zapisu SharePoint `flow-patch` zmienia tylko treść (`body`). Spłaszczone klucze OpenApiConnection (`parameters/method`, `parameters/uri`) są sprawdzane segment po segmencie.
   - `flow-diff` maskuje wartości pod `authentication`, `headers` i kluczami z hasłami (na ekranie i w pliku) i tworzy plik wyniku jako nowy.
   - Kontrola istnienia pliku traktuje błędy sieci jako „nie sprawdzono”.
+  - Wynik akcji odczytu i wszystko z niego wyliczone może trafić tylko do akcji wbudowanych i do treści (`body`) zapisu SharePoint. Inne użycie, np. odbiorca maila, wyłącza wyjątek.
   - `url`, `baseurl`, `siteurl` i `resourceuri` są kluczami zabronionymi (np. `request/url` w akcji HTTP z Entra ID, luka sprzed 1.3.0). `result('<zakres>')` liczy się jako odwołanie do wszystkich akcji w zakresie.
 - `ppcall flow-diff <ID> <adres Dataverse> <workflowid> <plik>`: porównanie definicji po zmianie ręcznej, z różnicami merytorycznymi osobno od zmian serializacji designera i ze sprawdzeniem `connectionReferences`; wynik w katalogu zgłoszenia.
 
