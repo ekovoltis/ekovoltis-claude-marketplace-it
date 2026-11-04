@@ -1,4 +1,4 @@
-# pp-support 1.2.1
+# pp-support 1.3.0
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -120,6 +120,22 @@ Włącza go osobne ustawienie `flow_definition_dataverse_urls`.
 Korekta lookupu (np. `eko_meteringpoint@odata.bind`) to zwykły krok `http` PATCH na rekordzie. Wartość sprzed zmiany odczytuje się w diagnozie i opisuje w planie wycofania. Wzorzec jest w skillu `zgloszenie`.
 
 Zapis `clientdata` włączonego flow nie wymaga wyłączania: flow zostaje włączony, a Power Automate od razu pokazuje nową definicję (sprawdzone na produkcji 02.11.2026 na trzech flow).
+
+### Wyjątek: nazwa pliku w ścieżce odczytu SharePoint (ITS-418)
+
+Najczęstsza naprawa flow rozliczeniowych to nowa nazwa szablonu, gdy biznes wgrał nowy plik. `flow-patch` może ją zmienić, gdy spełnione są wszystkie warunki (sprawdza je `ppcall` na aktualnej definicji):
+
+- zmieniana jest wartość zmiennej (`SetVariable`, `InitializeVariable`) albo tekst `inputs/parameters/path`,
+- wartość czytają wyłącznie akcje SharePoint `GetFileContentByPath` albo `GetFileMetadataByPath`, jako cały ostatni segment `path` przy stałym folderze i stałej witrynie (`dataset`), bez wyrażeń; zmienna nie trafia do żadnej innej akcji,
+- stara i nowa wartość to sama nazwa pliku z tym samym rozszerzeniem (bez `/`, `\`, `..`, `%`, `@`, `{}`, `?`, `#`, `:`).
+
+`plan-check` i `exec` sprawdzają przez Graph, czy nowy plik istnieje w tym folderze: przy 200 wypisują datę i autora zmiany, przy 404 odrzucają krok. Gdy konto `ppcall` nie ma dostępu, krok wymaga w planie sekcji „Dowód istnienia pliku” (kto, kiedy, gdzie sprawdził) i jest oznaczony jako niesprawdzony odczytem. Krok jest oznaczony `[wyjatek: nazwa pliku w sciezce odczytu SharePoint]`.
+
+Od 1.3.0 `dataset` (witryna akcji SharePoint) jest kluczem zabronionym, a w akcjach zapisu, przeniesienia i usuwania SharePoint wszystkie parametry poza treścią pliku liczą się jako adres: zmienna użyta w `CreateFile` czy `DeleteFile` nie zmieni się krokiem `flow-patch`.
+
+### Porównanie po zmianie ręcznej (`ppcall flow-diff`)
+
+`ppcall flow-diff <ID> <adres Dataverse> <workflowid> <plik sprzed zmiany>` (tylko odczyt) porównuje aktualną definicję z plikiem z katalogu zgłoszenia. Różnice merytoryczne pokazuje osobno od zmian, które nowy designer wprowadza przy zapisie (puste `runAfter`, `inputs/authentication` z `$ConnectionKey`, pusty `templateName`, dopisane `connection.name`, puste `additionalProperties` w schemacie). Sprawdza też, czy `connectionReferences` są te same, i podaje ich aktualne `connectionid`. Wynik zapisuje w `zgloszenia/<ID>/flow-diff-<workflowid>-<czas>.json`, z hasłami zamaskowanymi.
 
 ## SharePoint: tylko odczyt przez Graph, na koncie Azure CLI
 

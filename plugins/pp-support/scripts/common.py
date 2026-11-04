@@ -7,6 +7,7 @@ zeby obejscie jednego nie wystarczylo do wykonania zmiany.
 from __future__ import annotations
 
 import copy
+import unicodedata
 import datetime as dt
 import getpass
 import hashlib
@@ -413,7 +414,8 @@ FLOW_ACTION_HEADS = {"inputs", "expression", "foreach", "runAfter"}
 RUN_AFTER_STATUSES = {"Succeeded", "Failed", "Skipped", "TimedOut"}
 
 FLOW_PATCH_FORBIDDEN_KEYS = {"uri", "method", "headers", "host", "authentication", "path", "pathtemplate",
-                             "relativepath", "function", "operationid", "apimanagement", "queries"}
+                             "relativepath", "function", "operationid", "apimanagement", "queries", "dataset",
+                             "url", "baseurl", "siteurl", "resourceuri"}
 FLOW_PATCH_FORBIDDEN_PREFIXES = ("connection", "serviceprovider")
 GUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 MODIFIEDON_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -593,13 +595,14 @@ def flow_patch_path_problem(path) -> str | None:
     if flow_patch_required_type(path):
         return None
     keys = path[i:]
+    if keys == ["inputs", "parameters", "path"]:
+        return None  # tylko w wyjatku dla akcji odczytu SharePoint; warunki sprawdza ppcall (sp_filename_exception)
     if len(keys) < 3 or keys[0] != "inputs" or keys[1] not in FLOW_PATCH_INPUT_ROOTS:
         return ("zmienic mozna tekst pod inputs/parameters/<klucz> albo inputs/body/<klucz>, cale inputs Compose, "
                 "wartosc zmiennej, inputs/select (Select), inputs/where i inputs/from (Query), inputs/columns (Table), "
                 "expression (If, Until), foreach (Foreach), inputs/runStatus i inputs/runError (Terminate) "
                 "albo runAfter")
-    bad = [k for k in keys if k.lower() in FLOW_PATCH_FORBIDDEN_KEYS
-           or k.lower().startswith(FLOW_PATCH_FORBIDDEN_PREFIXES)]
+    bad = [k for k in keys if _forbidden([k.lower()])]
     if bad:
         return f"klucz {bad[0]} jest zabroniony (zmiana adresu, metody, naglowkow lub polaczenia)"
     return None
@@ -792,7 +795,22 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
         except KeyError:
             continue
         hit = sensitive_hit(defines(name, target), sensitive)
-        if hit and flow_patch_required_type(ch["sciezka"]) != ("*",):
+        exception, why = sp_filename_exception(definition, ch)
+        keys_l = [k.lower() for k in ch["sciezka"][i:]]
+        if sp_write_action(target) and keys_l[:2] == ["inputs", "parameters"] and keys_l[2:3] != ["body"]:
+            errs.append(f"{flow_patch_label(ch['sciezka'])}: w akcji zapisu SharePoint mozna zmienic tylko tresc (body); "
+                        "parametry wskazuja, gdzie i co zapisac")
+            continue
+        if keys_l == ["inputs", "parameters", "path"] and not exception:
+            errs.append(f"{flow_patch_label(ch['sciezka'])}: {why or 'klucz path jest zabroniony'}")
+            continue
+        refs_hit = defines(name, target) & sensitive
+        allowed = {("var", str(exception.get("zmienna", "")).lower())} if exception and exception.get("zmienna") else set()
+        if exception and ANY_REF not in sensitive and refs_hit <= allowed:
+            pass  # wyjatek: tylko zmienna z nazwa pliku, nic innego zaleznego od tej akcji
+        elif hit and flow_patch_required_type(ch["sciezka"]) != ("*",):
+            if why:
+                errs.append(f"{flow_patch_label(ch['sciezka'])}: wyjatek dla nazwy pliku SharePoint nie ma zastosowania: {why}")
             errs.append(f"{flow_patch_label(ch['sciezka'])}: akcja ustawia {', '.join(hit)}, z czego akcja wysylajaca "
                         "bierze adres, naglowki albo uwierzytelnienie; takiej zmiany nie wolno robic krokiem flow-patch")
         if len(SECRET_REF_RE.findall(canon(ch["ma_byc"]))) > len(SECRET_REF_RE.findall(canon(ch["bylo"]))):
@@ -805,6 +823,172 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
                 continue
             errs.extend(f"{flow_patch_label(ch['sciezka'])}: {e}" for e in run_after_graph_problems(scope))
     return errs, definition
+
+
+# ---------------------------------------------------------------- wyjatek: nazwa pliku w sciezce odczytu SharePoint
+# Decyzja Michala Kaszty z 2026-11-04 (ITS-418): flow-patch moze zmienic nazwe pliku czytanego przez akcje
+# SharePoint tylko do odczytu, gdy wartosc jest wylacznie ostatnim segmentem `path` przy stalym folderze i witrynie.
+SP_READ_OPERATIONS = {"getfilecontentbypath", "getfilemetadatabypath"}
+SP_API_RE = re.compile(r"^/providers/Microsoft\.PowerApps/apis/shared_sharepointonline$", re.I)
+RESERVED_FILE_NAMES = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+SP_DATASET_RE = re.compile(r"^https://[a-z0-9-]+\.sharepoint\.com(/(sites|teams)/[^/?#@{}%\\]+)?$", re.I)
+FILENAME_RE = re.compile(r"^[^/\\:*?\"<>|#%@{}\x00-\x1f]{1,120}\.[A-Za-z0-9]{1,8}$")
+SP_FILENAME_LABEL = "wyjatek: nazwa pliku w sciezce odczytu SharePoint"
+
+
+def filename_problem(old, new) -> str | None:
+    """Stara i nowa wartosc to sama nazwa pliku w tym samym folderze, z tym samym rozszerzeniem."""
+    for label, v in (("bylo", old), ("ma_byc", new)):
+        if (not isinstance(v, str) or not FILENAME_RE.fullmatch(v) or ".." in v or v != v.strip()
+                or v.startswith(".")):
+            return f"'{label}' nie jest sama nazwa pliku (bez /, \\, .., %, @, {{}}, ?, #, :; z rozszerzeniem)"
+        if (unicodedata.normalize("NFKC", v) != v or any(unicodedata.category(c) in ("Cc", "Cf") for c in v)
+                or v.rsplit(".", 1)[0].lower() in RESERVED_FILE_NAMES or v.rsplit(".", 1)[0].endswith((" ", "."))):
+            return f"'{label}' zawiera znaki niewidoczne, zastepcze albo nazwe zarezerwowana"
+    if old.rsplit(".", 1)[1].lower() != new.rsplit(".", 1)[1].lower():
+        return "nowa nazwa pliku ma inne rozszerzenie niz stara"
+    return None
+
+
+def sp_write_action(action) -> bool:
+    """Akcja konektora SharePoint, ktora nie jest odczytem (Get/List/Search)."""
+    if not isinstance(action, dict) or str(action_type(action) or "").lower() not in ("openapiconnection", "apiconnection",
+                                                                                      "openapiconnectionwebhook"):
+        return False
+    host = _ci(_ci(action, "inputs"), "host")
+    if not isinstance(host, dict) or not SP_API_RE.search(str(_ci(host, "apiid") or "")):
+        return False
+    return not re.match(r"(get|list|search)", str(_ci(host, "operationid") or "").lower())
+
+
+def sp_read_action(action) -> tuple[str, str] | None:
+    """(dataset, path) akcji SharePoint tylko do odczytu po sciezce; None dla kazdej innej akcji."""
+    if not isinstance(action, dict) or str(action_type(action) or "").lower() != "openapiconnection":
+        return None
+    inputs = _ci(action, "inputs")
+    host = _ci(inputs, "host")
+    params = _ci(inputs, "parameters")
+    if not isinstance(host, dict) or not isinstance(params, dict):
+        return None
+    if str(_ci(host, "operationid") or "").lower() not in SP_READ_OPERATIONS:
+        return None
+    if not SP_API_RE.search(str(_ci(host, "apiid") or "")):
+        return None
+    dataset, path = _ci(params, "dataset"), _ci(params, "path")
+    if not isinstance(dataset, str) or not isinstance(path, str) or not SP_DATASET_RE.fullmatch(dataset.rstrip("/")):
+        return None
+    return dataset.rstrip("/"), path
+
+
+def _folder_ok(folder: str) -> bool:
+    """Staly folder: zaczyna sie od /, bez wyrazen, bez .. i znakow kodowania."""
+    return (folder.startswith("/") and not re.search(r"[@{}%?#\\]", folder)
+            and ".." not in folder.split("/") and "//" not in folder)
+
+
+def sp_filename_exception(definition: dict, ch: dict) -> tuple[dict | None, str | None]:
+    """Czy zmiana miesci sie w wyjatku. (opis, None) gdy tak; (None, powod) gdy zmiana dotyczy akcji odczytu
+    albo jej zmiennej, ale warunki nie sa spelnione; (None, None) gdy to w ogole nie ten przypadek."""
+    path = ch["sciezka"]
+    i, problem = _split_flow_patch_path(path)
+    if problem:
+        return None, None
+    name = path[i - 1]
+    try:
+        target = get_at(definition, path[:i])
+        actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
+    except KeyError:
+        return None, None
+    keys = path[i:]
+    # 1. Literal w inputs/parameters/path akcji odczytu
+    if [k.lower() for k in keys] == ["inputs", "parameters", "path"]:
+        found = sp_read_action(target)
+        if not found:
+            return None, "klucz path wolno zmienic tylko w akcji SharePoint tylko do odczytu (GetFileContentByPath, GetFileMetadataByPath)"
+        old, new = ch.get("bylo"), ch.get("ma_byc")
+        if not isinstance(old, str) or not isinstance(new, str) or "/" not in old or "/" not in new:
+            return None, "path musi byc stalym tekstem z folderem i nazwa pliku"
+        old_dir, old_file = old.rsplit("/", 1)
+        new_dir, new_file = new.rsplit("/", 1)
+        if old_dir != new_dir or not _folder_ok(old_dir + "/"):
+            return None, "folder w path musi zostac ten sam i nie moze zawierac wyrazen"
+        bad = filename_problem(old_file, new_file)
+        if bad:
+            return None, bad
+        if ("act", name.lower()) in sensitive_refs(definition) or ANY_REF in sensitive_refs(definition):
+            return None, f"wynik akcji {name} trafia do adresu, identyfikatora albo uwierzytelnienia innej akcji"
+        return {"akcje": [name], "dataset": found[0], "folder": old_dir, "plik": new_file, "stary_plik": old_file}, None
+    # 2. Wartosc zmiennej uzytej jako ostatni segment path akcji odczytu
+    t = action_type(target)
+    if str(t or "").lower() not in ("setvariable", "initializevariable"):
+        return None, None
+    var = None
+    if str(t).lower() == "setvariable" and [k.lower() for k in keys] == ["inputs", "value"]:
+        var = _ci(_ci(target, "inputs"), "name")
+    elif str(t).lower() == "initializevariable" and len(keys) == 4 and keys[:2] == ["inputs", "variables"]:
+        try:
+            var = _ci(get_at(definition, path[:-1]), "name")
+        except KeyError:
+            var = None
+    if not isinstance(var, str):
+        return None, None
+    v = var.lower()
+    users, folders, datasets, setters = [], set(), set(), []
+    pattern = re.compile(r"^(?P<folder>/[^@{}]*)/@\{variables\('" + re.escape(var) + r"'\)\}$", re.I)
+    for aname, (_, action) in actions.items():
+        if defines(aname, action) == {("act", aname.lower()), ("var", v)} and str(action_type(action) or "").lower() in (
+                "setvariable", "initializevariable"):
+            setters.append(aname)  # ustawia tylko te zmienna; czy ktos czyta jej wynik, sprawdzane nizej
+            continue
+        text = canon(_own_body(action))
+        if ("var", v) not in _refs(text) and ANY_REF not in _refs(text):
+            continue
+        found = sp_read_action(action)
+        if not found:
+            return None, (f"zmienna {var} trafia tez do akcji {aname} ({action_type(action)}), ktora nie jest "
+                          "odczytem SharePoint po sciezce")
+        m = pattern.fullmatch(found[1])
+        if not m or not _folder_ok(m.group("folder") + "/"):
+            return None, (f"w akcji {aname} zmienna {var} nie jest calym ostatnim segmentem path przy stalym folderze")
+        rest = copy.deepcopy(_own_body(action))
+        params = _ci(_ci(rest, "inputs"), "parameters")
+        for k in [k for k in params if str(k).lower() == "path"]:
+            params[k] = ""
+        if ("var", v) in _refs(canon(rest)) or ANY_REF in _refs(canon(rest)):
+            return None, f"w akcji {aname} zmienna {var} wystepuje poza path"
+        users.append(aname)
+        folders.add(m.group("folder"))
+        datasets.add(found[0])
+    if not users:
+        return None, None
+    sensitive = sensitive_refs(definition)
+    if ANY_REF in sensitive:
+        return None, "flow ma odwolania z nazwa wyliczana, zaleznosci nie da sie ustalic"
+    for aname in users:
+        if ("act", aname.lower()) in sensitive:
+            return None, (f"wynik akcji {aname} trafia do adresu, identyfikatora albo uwierzytelnienia innej akcji "
+                          "(np. Http, DeleteFile), wiec zmiana pliku zmienilaby jej cel")
+    every_text = [canon(_own_body(a)) for n, (_, a) in actions.items()]
+    for aname in setters:
+        if any(("act", aname.lower()) in _refs(t) for t in every_text):
+            return None, f"wynik akcji {aname} jest uzywany przez inna akcje"
+    bad = filename_problem(ch.get("bylo"), ch.get("ma_byc"))
+    if bad:
+        return None, bad
+    if len(folders) != 1 or len(datasets) != 1:
+        return None, f"zmienna {var} jest czytana z roznych folderow albo witryn"
+    return {"akcje": sorted(users), "dataset": datasets.pop(), "folder": folders.pop(), "plik": ch["ma_byc"],
+            "stary_plik": ch["bylo"], "zmienna": var}, None
+
+
+def flow_patch_exceptions(step: dict, definition: dict) -> list[dict]:
+    """Zmiany kroku objete wyjatkiem nazwy pliku SharePoint (z etykieta sciezki)."""
+    out = []
+    for ch in step.get("zmiany") or []:
+        exception, _ = sp_filename_exception(definition, ch)
+        if exception:
+            out.append({**exception, "zmiana": flow_patch_label(ch["sciezka"])})
+    return out
 
 
 # ---------------------------------------------------------------- flow-definition
@@ -973,7 +1157,9 @@ def _all_keys(obj) -> set:
 
 
 def _forbidden(keys) -> list[str]:
-    return sorted(k for k in keys if k in FLOW_PATCH_FORBIDDEN_KEYS or k.startswith(FLOW_PATCH_FORBIDDEN_PREFIXES))
+    """Klucze zabronione; klucz splaszczony ("parameters/method") sprawdzany segment po segmencie."""
+    return sorted(k for k in keys if any(part in FLOW_PATCH_FORBIDDEN_KEYS or part.startswith(FLOW_PATCH_FORBIDDEN_PREFIXES)
+                                         for part in str(k).lower().split("/")))
 
 
 def _without_actions(definition: dict) -> dict:
@@ -1025,6 +1211,11 @@ def sensitive_refs(definition: dict) -> set:
         inputs = next((v for k, v in own.items() if str(k).lower() == "inputs"), None)
         if inputs is not None and not isinstance(inputs, dict):
             values.append(inputs)  # cale inputs jako wyrazenie: adres moze byc w nim
+        if sp_write_action(action):
+            # zapis, przeniesienie, usuniecie w SharePoint: cel wyznaczaja wszystkie parametry poza trescia pliku
+            params = _ci(_ci(own, "inputs"), "parameters")
+            if isinstance(params, dict):
+                values.extend(v for k, v in params.items() if str(k).lower() != "body")
         for v in values:
             found |= _refs(canon(v))
         # item() w petli: zrodlem jest klucz foreach petli, w ktorej lezy akcja.
@@ -1033,6 +1224,11 @@ def sensitive_refs(definition: dict) -> set:
             if parent and str(action_type(parent) or "").lower() in ("foreach", "until"):
                 found.add(("act", part[0].lower()))
     # Domkniecie: skad biora wartosci akcje i zmienne, od ktorych zalezy adres (Compose -> Select -> Http).
+    # result('<zakres>') zwraca wyniki akcji wewnatrz zakresu: zakres zalezy od wszystkich swoich akcji
+    nested: dict[str, list[str]] = {}
+    for n, (where, _) in actions.items():
+        for part in where:
+            nested.setdefault(part[0].lower(), []).append(n.lower())
     queue = list(found)
     while queue:
         ref = queue.pop()
@@ -1040,6 +1236,10 @@ def sensitive_refs(definition: dict) -> set:
             continue
         kind, name = ref
         if kind == "act":
+            for inner in nested.get(name, []):
+                if ("act", inner) not in found:
+                    found.add(("act", inner))
+                    queue.append(("act", inner))
             sources = [by_name[name]] if name in by_name else []
         else:
             sources = [a for n, a in by_name.items() if ref in defines(n, a)]

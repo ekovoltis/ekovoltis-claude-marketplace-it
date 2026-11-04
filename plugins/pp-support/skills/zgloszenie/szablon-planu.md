@@ -36,6 +36,10 @@
 ## Plan wycofania
 <!-- Jak cofnąć każdy krok. Jeśli krok jest nieodwracalny, napisz to wprost i wyjaśnij, czym to grozi. -->
 
+## Dowód istnienia pliku
+<!-- Tylko przy wyjątku dla nazwy pliku SharePoint, gdy konto ppcall nie ma dostępu do biblioteki: kto, kiedy
+     i w którym folderze sprawdził, że nowy plik istnieje. Inne plany: usuń sekcję. -->
+
 ## Weryfikacja po naprawie
 <!-- Jakim odczytem sprawdzimy, że naprawa zadziałała (konkretny URL lub polecenie i oczekiwany wynik).
      Opcjonalnie blok ```json z odczytami dla `ppcall verify <ID>` (tylko GET, hosty z listy dozwolonych):

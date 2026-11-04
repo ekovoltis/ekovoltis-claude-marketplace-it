@@ -543,7 +543,7 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
                 if decision:
                     return decision, reason
         if sub in {"get", "runs", "verify", "dostepy", "rejestr", "plan-new", "plan-check", "status", "revoke",
-                   "config", "konfiguracja", ""}:
+                   "config", "konfiguracja", "flow-diff", ""}:
             return "allow", "pp-support: operacja tylko do odczytu lub na lokalnych plikach zgloszenia"
         return "deny", f"Nieznana komenda ppcall: {sub}"
     if touches_state(s, cwd, full):
