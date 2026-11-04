@@ -1891,6 +1891,8 @@ try:
         ("bash -o pipefail -c", 'bash -o pipefail -c "grep -r x ~"', "bash", True),
         ("bash skrypt z -c w argumentach", "bash skrypt.sh -c x", "bash", False),
         ("bash +o pipefail -c", 'bash +o pipefail -c "grep -r x ~"', "bash", True),
+        ("bash -so pipefail (stdin)", "echo 'grep -r x ~' | bash -so pipefail x", "bash", True),
+        ("bash -co", 'bash -co pipefail "grep -r x ~"', "bash", True),
         ("bash -eo pipefail -c", 'bash -eo pipefail -c "grep -r x ~"', "bash", True),
         ("powershell /wd ~", 'powershell /wd ~ /c "gci -r ."', "powershell", True),
         ("powershell /WorkingDirectory:~", 'powershell /WorkingDirectory:~ -Command "gci -r ."', "powershell", True),

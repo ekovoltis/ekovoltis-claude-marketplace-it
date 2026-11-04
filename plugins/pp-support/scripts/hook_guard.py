@@ -278,6 +278,8 @@ def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", 
                     return True  # kod ze stdin albo brak kodu: nie da sie sprawdzic
                 start = i + 2
                 break
+            if not ps and re.fullmatch(r"-[a-zA-Z]+", a) and ("s" in a or ("c" in a and "o" in a.lower())):
+                return True  # bash -s / -so ...: kod ze stdin; -co: nie zgadujemy, ktory argument jest kodem
             if not ps and (re.fullmatch(r"[-+][a-zA-Z]*[oO]", a) or a in ("--rcfile", "--init-file")):
                 i += 2  # bash -o/+o/-O nazwa, --rcfile plik: opcja z wartoscia
                 continue
@@ -299,8 +301,6 @@ def recursive_reaches_state(tokens: list[str], cwd: str, dialect: str = "bash", 
                         wd = value
                     i += 1 if ":" in a else 2
                     continue
-            elif re.fullmatch(r"-[a-z]*s[a-z]*", a):
-                return True  # bash -s: kod ze stdin
             i += 1
         if start is None:
             # sama powloka: kod ze stdin, gdy polecenie podaje go potokiem albo przekierowaniem
