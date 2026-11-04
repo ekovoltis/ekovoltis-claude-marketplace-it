@@ -84,6 +84,38 @@ def get_token(resource: str) -> str:
     return r.stdout.strip()
 
 
+_ACCOUNT: list[str] = []
+
+
+def az_account() -> str:
+    """Konto, na ktorym Azure CLI wydaje tokeny ppcall (bez dotykania tokenu)."""
+    if not _ACCOUNT:
+        try:
+            r = subprocess.run([_az(), "account", "show", "--query", "user.name", "-o", "tsv"],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+            _ACCOUNT.append(r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "nieznane konto")
+        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
+            _ACCOUNT.append("nieznane konto")
+    return _ACCOUNT[0]
+
+
+def access_hint(url: str, status: int) -> str | None:
+    """Wyjasnienie typowych odmow SharePoint zamiast samego 401/403 (ITS-418)."""
+    p = urllib.parse.urlparse(url)
+    host, path = (p.hostname or "").lower(), urllib.parse.unquote(p.path).lower()
+    if host == "graph.microsoft.com" and status == 403 and "/sites" in path:
+        return (f"ppcall dziala na koncie {az_account()} (Azure CLI), nie na koncie z przegladarki. 403 przy "
+                "zawartosci witryny SharePoint (biblioteki, pliki, listy) oznacza zwykle, ze to konto nie ma do niej "
+                "dostepu: odczyt nadaje wlasciciel witryny. Jesli konto ma dostep, a 403 zostaje, tokenowi Azure CLI "
+                "brakuje zakresow Sites/Files i potrzebna jest wlasna aplikacja Entra. ppcall nie omija uprawnien.")
+    if C.SHAREPOINT_HOST_RE.match(host) and status == 401:
+        return ("SharePoint REST (/_api) nie przyjmuje tokenu aplikacji Azure CLI. Pliki i metadane czytaj przez Graph, "
+                "np. https://graph.microsoft.com/v1.0/sites/<id witryny>/drive/root:/<folder>:/children "
+                "albo .../drive/items/<id>/versions (id witryny z .../sites/<host>:/sites/<witryna>). "
+                "REST bedzie dostepny po wdrozeniu wlasnej aplikacji Entra.")
+    return None
+
+
 def encode_url(url: str) -> str:
     """Spacje i polskie znaki w adresie (np. w $filter) koduje procentowo, reszte zostawia."""
     return urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
@@ -291,6 +323,9 @@ def cmd_get(args: list[str]) -> None:
     C.audit({"typ": "odczyt", "url": C.redact_url(url), "status": status, "wszystkie_strony": all_pages})
     payload = redact_payload(payload)
     out(f"HTTP {status}")
+    hint = access_hint(url, status)
+    if hint:
+        out(f"Uwaga: {hint}")
     if out_file:
         Path(out_file).write_bytes(payload)
         out(f"Zapisano {len(payload)} B do {out_file}")
@@ -516,7 +551,7 @@ def cmd_dostepy(_args: list[str]) -> None:
             status, payload = http("GET", url)
             ok = 200 <= status < 300
             add(obszar, test, ok, f"HTTP {status} {_count(payload) if ok else _short(payload, 1)[:300]}",
-                "" if ok else hint)
+                "" if ok else (access_hint(url, status) or hint))
         except RuntimeError as e:
             add(obszar, test, False, str(e), hint)
 
@@ -551,9 +586,12 @@ def cmd_dostepy(_args: list[str]) -> None:
     site = (cfg.get("sharepoint_site") or "").strip()
     # Przy blednych ustawieniach SharePoint test pokazalby blad uprawnien zamiast bledu konfiguracji.
     if host and not any(p.startswith("sharepoint") for p in problems):
+        add("SharePoint", "konto ppcall", True, f"{az_account()} (uprawnienia tego konta, nie konta z przegladarki)")
         graph_site = f"https://graph.microsoft.com/v1.0/sites/{host}" + (f":{site}" if site else "")
         probe("SharePoint", "Graph: witryna", graph_site,
               "Token Azure CLI moze nie miec zakresu Sites.Read.All, rozwazyc wlasna rejestracje aplikacji")
+        probe("SharePoint", "Graph: biblioteka dokumentow", graph_site + (":" if site else "") + "/drive?$select=id,name",
+              "Konto ppcall bez dostepu do biblioteki albo token bez zakresu Files/Sites")
         probe("SharePoint", "REST: witryna",
               f"https://{host}{site}/_api/web?$select=Title,Url",
               "Azure CLI moze nie miec zgody na zasob SharePoint, rozwazyc wlasna rejestracje aplikacji")

@@ -1664,6 +1664,31 @@ cfg["flow_patch_dataverse_urls"] = []
 cfg["flow_definition_dataverse_urls"] = []
 C.save_config(cfg)
 
+print("30. 1.2.1: odmowy SharePoint z wyjasnieniem (ITS-418)")
+P = importlib.reload(P)
+P.az_account = lambda: "e2vitservice@ekovoltis.pl"
+GSITE = "https://graph.microsoft.com/v1.0/sites/colpro.sharepoint.com:/sites/BazadokumentowEkovoltis"
+SECRET_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOi.tajny.podpis"
+P.get_token = lambda resource: SECRET_TOKEN
+ANSWERS = {GSITE + ":/drive/root:/Rozliczenia niestandardowe/Template:/children": (403, b'{"error": {"code": "accessDenied"}}'),
+           "https://colpro.sharepoint.com/sites/BazadokumentowEkovoltis/_api/web": (401, b'{"error": "invalid_request"}'),
+           GSITE: (200, b'{"id": "x"}')}
+P.http = lambda m, u, b=None, timeout=90, headers=None: ANSWERS.get(u, (404, b"{}"))
+for label, url, needle in [("Graph 403 na bibliotece", GSITE + ":/drive/root:/Rozliczenia niestandardowe/Template:/children", "e2vitservice"),
+                           ("REST 401", "https://colpro.sharepoint.com/sites/BazadokumentowEkovoltis/_api/web", "przez Graph"),
+                           ("Graph 200 bez uwagi", GSITE, None)]:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            P.cmd_get([url])
+        except SystemExit:
+            pass
+    text_out = buf.getvalue()
+    expect(f"SharePoint: {label}", (needle in text_out) if needle else ("Uwaga:" not in text_out), True)
+    expect(f"SharePoint: {label}: bez tokenu", SECRET_TOKEN in text_out, False)
+expect("SharePoint: 403 z Dataverse bez uwagi o SharePoint", P.access_hint(f"{DV}/api/data/v9.2/x", 403), None)
+expect("SharePoint: 401 z Graph poza witrynami bez uwagi", P.access_hint("https://graph.microsoft.com/v1.0/me", 401), None)
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

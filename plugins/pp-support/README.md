@@ -1,4 +1,4 @@
-# pp-support 1.2.0
+# pp-support 1.2.1
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -120,6 +120,14 @@ Włącza go osobne ustawienie `flow_definition_dataverse_urls`.
 Korekta lookupu (np. `eko_meteringpoint@odata.bind`) to zwykły krok `http` PATCH na rekordzie. Wartość sprzed zmiany odczytuje się w diagnozie i opisuje w planie wycofania. Wzorzec jest w skillu `zgloszenie`.
 
 Zapis `clientdata` włączonego flow nie wymaga wyłączania: flow zostaje włączony, a Power Automate od razu pokazuje nową definicję (sprawdzone na produkcji 02.11.2026 na trzech flow).
+
+## SharePoint: tylko odczyt przez Graph, na koncie Azure CLI
+
+`ppcall` czyta SharePoint na koncie, na którym zalogowano Azure CLI w konfiguracji dyżuru (test dostępów pokazuje je w wierszu „konto ppcall”). To konto, a nie konto z przeglądarki, musi mieć odczyt w witrynie (stan z 04.11.2026: e2vitservice bez dostępu do BazadokumentowEkovoltis, ITS-418).
+
+- Graph: witryna działa. Biblioteki, pliki (`/sites/<id witryny>/drive/root:/<folder>:/children`; id witryny z `/sites/<host>:/sites/<witryna>`, bo ścieżki pliku nie da się dopisać do adresu witryny podanego ścieżką) i wersje (`/drive/items/<id>/versions`) działają, gdy konto ppcall ma dostęp i token Azure CLI obejmuje zawartość witryny. Do sprawdzenia po nadaniu dostępu.
+- SharePoint REST (`/_api`): token aplikacji Azure CLI jest odrzucany (401 `invalid_request`). REST będzie dostępny po wdrożeniu własnej aplikacji Entra (wniosek z 16.10.2026).
+- Przy 403 z Graph i 401 z REST `ppcall get` dopisuje wyjaśnienie z nazwą konta zamiast samego kodu błędu.
 
 ## Ograniczenia, które trzeba znać
 

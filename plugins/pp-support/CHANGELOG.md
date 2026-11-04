@@ -1,5 +1,10 @@
 # Zmiany w pp-support
 
+## 1.2.1 (2026-11-04)
+
+- ITS-418: przy 403 z Graph dla zawartości witryny SharePoint i przy 401 z SharePoint REST `ppcall get` dopisuje wyjaśnienie: na jakim koncie działa (Azure CLI, nie konto z przeglądarki), kto nadaje odczyt i że REST nie przyjmuje tokenu Azure CLI (czytaj przez Graph). Konto bierze z `az account show`, bez dotykania tokenu.
+- `ppcall dostepy`: wiersz „konto ppcall” i test „Graph: biblioteka dokumentów”; skill `sprawdz-dostepy` i README opisują ograniczenia SharePoint.
+
 ## 1.2.0 (2026-11-04)
 
 Naprawy w definicji flow bez ścieżki SWO (decyzja Michała Kaszty z 2026-11-04, ITS-420). Niezmiennik 6 zmieniony: zmiana logiki flow jest dozwolona z akceptacją, w granicach poniżej.

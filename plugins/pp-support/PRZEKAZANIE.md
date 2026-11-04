@@ -51,7 +51,7 @@ Test dostępów na produkcji 21.10.2026 (Windows, Git Bash, konto e2vitservice, 
 
 ## Do zweryfikowania na prawdziwym środowisku
 
-- SharePoint (Graph i REST): test z 21.10.2026 nie doszedł do zapytania przez opisany wyżej błąd ścieżki. Jeśli Azure CLI nie dostanie przyjmowanego tokenu, następny krok to własna rejestracja aplikacji w Entra ID (zgłoszona do administratora).
+- SharePoint (ITS-418, 04.11.2026): tokeny Azure CLI wydaje konto e2vitservice (nie konto dyżurnego). Token Graph ma zakresy katalogowe, bez Sites.* i Files.*. Graph: witryna 200, listy puste, `/drive` 403. REST `/_api`: 401 `invalid_request`, czyli token aplikacji Azure CLI odrzucony. Do sprawdzenia po nadaniu kontu e2vitservice odczytu w BazadokumentowEkovoltis: `children` i `versions` przez Graph. Jeśli dalej 403, potrzebna własna aplikacja Entra (wniosek z 16.10.2026, brak client ID). Od 1.2.1 `ppcall get` i `ppcall dostepy` opisują te odmowy z nazwą konta.
 - Nazwa narzędzia i pole polecenia dla PowerShell na Windows (strażnik zakłada `PowerShell` i `command`).
 - Składnia fragmentu managed settings z README (`permissions.deny`, `disableBypassPermissionsMode`).
 
