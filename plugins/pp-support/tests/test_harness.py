@@ -2292,6 +2292,45 @@ expect("wynik odczytu: tresc CreateFile i Compose dozwolone", live5(OK5, variant
 cfg["flow_patch_dataverse_urls"] = []
 C.save_config(cfg)
 
+print("35. 1.3.0: petla po wyniku odczytu i result() zakresu z wartoscia z pliku")
+cfg = C.load_config()
+cfg["flow_patch_dataverse_urls"] = [DV]
+C.save_config(cfg)
+HTTP_ITEM = {"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "@{item()}"}}
+for label, change in [
+    ("Foreach po wyniku odczytu, Http z item()", lambda a: a.update(
+        FE={"type": "Foreach", "runAfter": {}, "foreach": "@body('Get_file_content_using_path')?['wiersze']",
+            "actions": {"H": copy.deepcopy(HTTP_ITEM)}})),
+    ("Foreach po Compose z wyniku, CreateFile z item()", lambda a: a.update(
+        Cmp={"type": "Compose", "runAfter": {}, "inputs": "@body('Get_file_content_using_path')"},
+        FE={"type": "Foreach", "runAfter": {}, "foreach": "@outputs('Cmp')",
+            "actions": {"CF": sp_action("CreateFile", {"dataset": SPDS, "folderPath": "/X", "name": "@{item()}", "body": "x"})}})),
+    ("result() zakresu z Compose z wyniku", lambda a: a.update(
+        S={"type": "Scope", "runAfter": {}, "actions": {"Cmp": {"type": "Compose", "runAfter": {},
+                                                                "inputs": "@body('Get_file_content_using_path')"}}},
+        H={"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "@{result('S')}"}})),
+]:
+    expect(f"wynik odczytu: odrzucone: {label}", bool(live5(OK5, variant(change))), True)
+expect("Foreach niezalezny od pliku nie blokuje", live5(OK5, variant(lambda a: a.update(
+    FE={"type": "Foreach", "runAfter": {}, "foreach": "@triggerBody()?['x']", "actions": {"H": copy.deepcopy(HTTP_ITEM)}}))), [])
+cfg["flow_patch_dataverse_urls"] = []
+C.save_config(cfg)
+
+print("36. 1.3.0: dwa flow-diff w tej samej sekundzie")
+FD5.reset(definition=DEF5)
+(WORK / "zgloszenia/SPF-1/przed-sekunda.json").write_text(json.dumps(DEF5), encoding="utf-8")
+real_now = P.C.now
+P.C.now = lambda: real_now().replace(microsecond=0, second=7)
+try:
+    before_files = set((WORK / "zgloszenia/SPF-1").glob("flow-diff-*.json"))
+    for _ in range(2):
+        with contextlib.redirect_stdout(io.StringIO()):
+            P.cmd_flow_diff(["SPF-1", DV, WF3, "przed-sekunda.json"])
+    expect("flow-diff: dwa wyniki w tej samej sekundzie, bez bledu",
+           len(set((WORK / "zgloszenia/SPF-1").glob("flow-diff-*.json")) - before_files), 2)
+finally:
+    P.C.now = real_now
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

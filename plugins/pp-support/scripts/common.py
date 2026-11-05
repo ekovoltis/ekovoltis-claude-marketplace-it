@@ -893,23 +893,39 @@ def derived_consumers_problem(definition: dict, start: list[str]) -> str | None:
         actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
     except KeyError:
         return "nie mozna odczytac akcji flow"
-    derived = {("act", n.lower()) for n in start}
+    by_name = {n.lower(): a for n, (_, a) in actions.items()}
+
+    def ancestors(where) -> list[str]:
+        return [part[0].lower() for part in where]
+
+    def mark(name: str, where) -> None:
+        # wynik akcji jest tez w result('<zakres>') kazdego zakresu nad nia
+        derived.add(("act", name.lower()))
+        derived.update(("act", anc) for anc in ancestors(where))
+
+    derived: set = set()
+    for n in start:
+        mark(n, actions[n][0] if n in actions else ())
     changed = True
     while changed:
         changed = False
-        for n, (_, a) in actions.items():
+        for n, (where, a) in actions.items():
             key = ("act", n.lower())
             if key in derived:
                 continue
             refs = _refs(canon(_own_body(a)))
             if ANY_REF in refs:
                 return f"akcja {n} ma odwolanie z nazwa wyliczana"
-            if not refs & derived:
+            # item() / items() w petli po wartosci wyliczonej z pliku nie wskazuje akcji z nazwy
+            in_loop = any(("act", anc) in derived and str(action_type(by_name.get(anc, {})) or "").lower()
+                          in ("foreach", "until") for anc in ancestors(where))
+            if not refs & derived and not in_loop:
                 continue
             t = str(action_type(a) or "").lower()
             if t in FLOW_SAFE_TYPES:
-                derived |= {key} | {r for r in defines(n, a) if r[0] == "var"}
-            elif sp_write_action(a):
+                mark(n, where)
+                derived |= {r for r in defines(n, a) if r[0] == "var"}
+            elif sp_write_action(a) and not in_loop:
                 rest = copy.deepcopy(_own_body(a))
                 params = _ci(_ci(rest, "inputs"), "parameters")
                 if isinstance(params, dict):

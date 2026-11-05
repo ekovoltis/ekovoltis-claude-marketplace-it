@@ -1329,9 +1329,17 @@ def cmd_flow_diff(args: list[str]) -> None:
               "serializacja_sciezki": noise,
               "connectionReferences": {"te_same": refs_before == refs_after, "przed": refs_before,
                                        "po": refs_after, "connectionid_teraz": connections}}
-    target = folder / f"flow-diff-{wf}-{C.now().strftime('%Y%m%dT%H%M%SZ')}.json"
-    with open(target, "x", encoding="utf-8") as f:  # nowy plik, nigdy przez istniejace dowiazanie
-        f.write(json.dumps(result, ensure_ascii=False, indent=1))
+    base = f"flow-diff-{wf}-{C.now().strftime('%Y%m%dT%H%M%SZ')}"
+    for n in range(1000):  # dwa porownania w tej samej sekundzie: kolejny numer, nigdy nadpisanie
+        target = folder / (f"{base}.json" if n == 0 else f"{base}-{n}.json")
+        try:
+            with open(target, "x", encoding="utf-8") as f:  # nowy plik, nigdy przez istniejace dowiazanie
+                f.write(json.dumps(result, ensure_ascii=False, indent=1))
+            break
+        except FileExistsError:
+            continue
+    else:
+        fail("Nie mozna utworzyc pliku wyniku flow-diff (zbyt wiele plikow z tym samym czasem).")
     C.audit({"typ": "flow-diff", "id": incident, "flow": wf, "merytoryczne": len(real),
              "serializacja": sum(len(v) for v in noise.values())})
     out(f"Flow: {record.get('name')} (modifiedon {record.get('modifiedon')})")
