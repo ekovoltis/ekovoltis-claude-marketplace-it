@@ -1974,6 +1974,363 @@ expect("dziennik wykonania: odnosnik kopii do planu",
        str(last_fd.get("kopia_plan", "")).startswith("backup/") and Path(last_fd["kopia"]).name == last_fd["kopia_plan"][7:],
        True)
 
+print("31. 1.3.0: nazwa pliku w sciezce odczytu SharePoint (ITS-418) i flow-diff")
+P = importlib.reload(P)
+cfg = C.load_config()
+cfg["flow_patch_dataverse_urls"] = [DV]
+cfg["dataverse_urls"] = [DV]
+C.save_config(cfg)
+SPDS = "https://colpro.sharepoint.com/sites/BazadokumentowEkovoltis"
+TPL_OLD, TPL_NEW = "20260920_SZABLON_rozliczenie_PPFE_CZYSTY.xlsx", "20261102_SZABLON_rozliczenie_PPFE_CZYSTY.xlsx"
+SPHOST = {"connectionName": "shared_sharepointonline", "apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline"}
+
+
+def sp_action(op, params, ra=None):
+    return {"type": "OpenApiConnection", "runAfter": ra or {},
+            "inputs": {"host": {**SPHOST, "operationId": op}, "parameters": params,
+                       "authentication": "@parameters('$authentication')"}}
+
+
+DEF5 = {"properties": {"connectionReferences": {"shared_sharepointonline": {"connection": {"connectionReferenceLogicalName": "eko_sp"}}},
+                       "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Init_TemplateFilePath": {"type": "InitializeVariable", "runAfter": {},
+                              "inputs": {"variables": [{"name": "TemplateFilePath", "type": "string"}]}},
+    "Init_Filename": {"type": "InitializeVariable", "runAfter": {"Init_TemplateFilePath": ["Succeeded"]},
+                      "inputs": {"variables": [{"name": "Filename", "type": "string", "value": "wynik.xlsx"}]}},
+    "Switch": {"type": "Switch", "runAfter": {"Init_Filename": ["Succeeded"]}, "expression": "@x", "cases": {
+        "Case_9": {"case": "FAR", "actions": {"Set_variable_6": {"type": "SetVariable", "runAfter": {},
+                                                                 "inputs": {"name": "TemplateFilePath", "value": TPL_OLD}}}}},
+               "default": {"actions": {}}},
+    "Get_file_content_using_path": sp_action("GetFileContentByPath", {
+        "dataset": SPDS, "path": "/Shared Documents/Rozliczenia niestandardowe/Template/@{variables('TemplateFilePath')}",
+        "inferContentType": True}, {"Switch": ["Succeeded"]}),
+    "Get_metadata_literal": sp_action("GetFileMetadataByPath", {
+        "dataset": SPDS, "path": "/Shared Documents/Rozliczenia niestandardowe/Template/stary.xlsx"}, {"Switch": ["Succeeded"]}),
+    "Create_file": sp_action("CreateFile", {"dataset": SPDS, "folderPath": "/Shared Documents/Wyniki",
+                                            "name": "@variables('Filename')",
+                                            "body": "@body('Get_file_content_using_path')"},
+                             {"Get_file_content_using_path": ["Succeeded"]})}}}}
+SETV = ["properties", "definition", "actions", "Switch", "cases", "Case_9", "actions", "Set_variable_6", "inputs", "value"]
+GRAPH_STATE = {"plik": 200}
+SITE_ID = "colpro.sharepoint.com,867882b1-a6f8-44b6-b7c7-63d7e0ac5d65,66c033ad-8f81-4439-abf1-797d3d64f936"
+FD5 = FakeFlow()
+FD5.reset(definition=DEF5)
+
+
+def graph_and_dv(m, u, b=None, timeout=90, headers=None):
+    if u.startswith("https://graph.microsoft.com/v1.0/sites/colpro.sharepoint.com:/sites/BazadokumentowEkovoltis"):
+        return 200, json.dumps({"id": SITE_ID}).encode()
+    if u.startswith(f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives"):
+        return 200, json.dumps({"value": [{"id": "d-inna", "webUrl": SPDS + "/Inne"},
+                                          {"id": "d-1", "webUrl": SPDS + "/Shared%20Documents"}]}).encode()
+    if u.startswith("https://graph.microsoft.com/v1.0/drives/d-1/root:/Rozliczenia%20niestandardowe/Template/"):
+        GRAPH_STATE["url"] = u
+        if GRAPH_STATE["plik"] == 200:
+            return 200, json.dumps({"name": TPL_NEW, "lastModifiedDateTime": "2026-11-02T08:00:00Z",
+                                    "lastModifiedBy": {"user": {"displayName": "Anna Biznes"}}}).encode()
+        return GRAPH_STATE["plik"], b'{"error": {"code": "x"}}'
+    if "connectionreferences" in u:
+        return 200, b'{"value": [{"connectionid": "shared-sharepointonl-1"}]}'
+    return FD5(m, u, b, timeout, headers)
+
+
+P.http = graph_and_dv
+
+
+def fp5(changes, evidence=False, incident="SPF-1"):
+    step = {"nr": 1, "opis": "Nowy szablon rozliczenia FAR PPFE", "typ": "flow-patch", "srodowisko": DV,
+            "workflowid": WF3, "oczekiwany_modifiedon": "2026-08-25T09:52:49Z", "zmiany": changes}
+    head = fp_plan([]).replace("FP-1", incident).split("## Kroki")[0]
+    if evidence:
+        head = head.replace("## Plan wycofania", "## Dowód istnienia pliku\nMichał Kaszta, 04.11.2026 10:40, folder "
+                                                  "Template w przeglądarce: plik 20261102_SZABLON... jest.\n\n## Plan wycofania")
+    return head + "## Kroki\n```json\n" + json.dumps([step], ensure_ascii=False, indent=1) + "\n```\n"
+
+
+ok_change = [{"sciezka": SETV, "bylo": TPL_OLD, "ma_byc": TPL_NEW}]
+code, txt = plan_check(fp5(ok_change), "SPF-1")
+expect("ITS-418: plan-check przechodzi z oznaczeniem wyjatku", (code, "[wyjatek: nazwa pliku w sciezce odczytu SharePoint]" in txt), (None, True))
+expect("ITS-418: plik sprawdzony w Graph", ("plik istnieje" in txt, "Anna Biznes" in txt), (True, True))
+expect("ITS-418: Graph pyta o plik w tym samym folderze", GRAPH_STATE.get("url", "").split("?")[0].endswith(
+    "/Template/20261102_SZABLON_rozliczenie_PPFE_CZYSTY.xlsx"), True)
+GRAPH_STATE["plik"] = 404
+code, txt = plan_check(fp5(ok_change), "SPF-1")
+expect("ITS-418: brak pliku w folderze odrzucony", (code, "nie ma pliku" in txt), (2, True))
+expect("ITS-418: brak pliku odrzucony takze z dowodem", plan_check(fp5(ok_change, evidence=True), "SPF-1")[0], 2)
+GRAPH_STATE["plik"] = 403
+code, txt = plan_check(fp5(ok_change), "SPF-1")
+expect("ITS-418: bez dostepu i bez dowodu odrzucony", (code, "Dowód istnienia pliku" in txt), (2, True))
+code, txt = plan_check(fp5(ok_change, evidence=True), "SPF-1")
+expect("ITS-418: bez dostepu, z dowodem od czlowieka", (code, "nie sprawdzone odczytem: dowod od czlowieka" in txt), (None, True))
+GRAPH_STATE["plik"] = 200
+for label, new in [("ukosnik", "../" + TPL_NEW), ("folder", "OLD/" + TPL_NEW), ("inne rozszerzenie", TPL_NEW[:-5] + ".xlsm"),
+                   ("wyrazenie", "@{variables('X')}.xlsx"), ("kodowanie", "a%2Fb.xlsx"), ("bez rozszerzenia", "szablon")]:
+    expect(f"ITS-418: odrzucone ({label})", plan_check(fp5([{"sciezka": SETV, "bylo": TPL_OLD, "ma_byc": new}]), "SPF-1")[0], 2)
+A5 = ["properties", "definition", "actions"]
+for label, change in [
+    ("dataset akcji odczytu", {"sciezka": A5 + ["Get_file_content_using_path", "inputs", "parameters", "dataset"],
+                               "bylo": SPDS, "ma_byc": "https://colpro.sharepoint.com/sites/Inna"}),
+    ("dataset akcji CreateFile", {"sciezka": A5 + ["Create_file", "inputs", "parameters", "dataset"],
+                                  "bylo": SPDS, "ma_byc": "https://colpro.sharepoint.com/sites/Inna"}),
+    ("zmienna uzyta w CreateFile", {"sciezka": A5 + ["Init_Filename", "inputs", "variables", "0", "value"],
+                                    "bylo": "wynik.xlsx", "ma_byc": "inny.xlsx"}),
+    ("path akcji odczytu z innym folderem", {"sciezka": A5 + ["Get_metadata_literal", "inputs", "parameters", "path"],
+                                             "bylo": "/Shared Documents/Rozliczenia niestandardowe/Template/stary.xlsx",
+                                             "ma_byc": "/Shared Documents/Inny/stary.xlsx"}),
+]:
+    expect(f"ITS-418: nadal odrzucone: {label}", plan_check(fp5([change]), "SPF-1")[0], 2)
+code, txt = plan_check(fp5([{"sciezka": A5 + ["Get_metadata_literal", "inputs", "parameters", "path"],
+                             "bylo": "/Shared Documents/Rozliczenia niestandardowe/Template/stary.xlsx",
+                             "ma_byc": "/Shared Documents/Rozliczenia niestandardowe/Template/" + TPL_NEW}]), "SPF-1")
+expect("ITS-418: literal w path akcji odczytu (ta sama sciezka folderu)", (code, "[wyjatek:" in txt), (None, True))
+
+
+def variant(change):
+    d = copy.deepcopy(DEF5)
+    change(d["properties"]["definition"]["actions"])
+    return d
+
+
+for label, change in [
+    ("zmienna takze w CreateFile", lambda a: a["Create_file"]["inputs"]["parameters"].update(name="@variables('TemplateFilePath')")),
+    ("zmienna nie jako caly segment", lambda a: a["Get_file_content_using_path"]["inputs"]["parameters"].update(
+        path="/Shared Documents/Template/v_@{variables('TemplateFilePath')}")),
+    ("wyrazenie w folderze", lambda a: a["Get_file_content_using_path"]["inputs"]["parameters"].update(
+        path="/Shared Documents/@{triggerBody()['f']}/@{variables('TemplateFilePath')}")),
+    ("operacja zapisu", lambda a: a["Get_file_content_using_path"]["inputs"]["host"].update(operationId="UpdateFileByPath")),
+    ("inny konektor", lambda a: a["Get_file_content_using_path"]["inputs"]["host"].update(apiId="/providers/x/apis/shared_onedriveforbusiness")),
+    ("zmienna w Compose", lambda a: a.update(Cmp={"type": "Compose", "runAfter": {}, "inputs": "@variables('TemplateFilePath')"})),
+    ("dataset wyrazeniem", lambda a: a["Get_file_content_using_path"]["inputs"]["parameters"].update(dataset="@{variables('Site')}")),
+]:
+    exc, why = C.sp_filename_exception(variant(change), ok_change[0])
+    expect(f"ITS-418: wyjatek nie obejmuje: {label}", (exc is None, bool(why)), (True, True))
+expect("ITS-418: wyjatek obejmuje przypadek z briefu", bool(C.sp_filename_exception(DEF5, ok_change[0])[0]), True)
+
+text = fp5(ok_change, incident="SPF-2")
+plan_check(text, "SPF-2")
+accept("SPF-2", text)
+expect("ITS-418: exec", run_exec("SPF-2"), None)
+expect("ITS-418: nowa nazwa zapisana", C.get_at(json.loads(FD5.clientdata), SETV), TPL_NEW)
+entry = json.loads((WORK / "zgloszenia/SPF-2/wykonanie.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+expect("ITS-418: wyjatek w dzienniku", [w.get("plik_sprawdzony") for w in entry.get("wyjatek", [])], ["jest"])
+FD5.reset(definition=DEF5)
+GRAPH_STATE["plik"] = 404
+text = fp5(ok_change, evidence=True, incident="SPF-3")
+GRAPH_STATE["plik"] = 200
+plan_check(text, "SPF-3")
+accept("SPF-3", text)
+GRAPH_STATE["plik"] = 404  # plik zniknal miedzy akceptacja a wykonaniem
+expect("ITS-418: exec sprawdza plik ponownie", run_exec("SPF-3"), 4)
+expect("ITS-418: nic nie zapisano", FD5.patches, [])
+GRAPH_STATE["plik"] = 200
+
+print("   flow-diff")
+FD5.reset(definition=DEF5)
+after5 = copy.deepcopy(DEF5)
+a5 = after5["properties"]["definition"]["actions"]
+a5["Switch"]["cases"]["Case_9"]["actions"]["Set_variable_6"]["inputs"]["value"] = TPL_NEW
+del a5["Init_TemplateFilePath"]["runAfter"]
+a5["Create_file"]["inputs"]["authentication"] = "@json(decodeBase64(triggerOutputs().headers['X-MS-APIM-Tokens']))['$ConnectionKey']"
+after5["properties"]["connectionReferences"]["shared_sharepointonline"]["connection"]["name"] = "shared-sharepointonl-1"
+before5 = copy.deepcopy(after5)
+before5["properties"]["definition"]["actions"]["Switch"]["cases"]["Case_9"]["actions"]["Set_variable_6"]["inputs"]["value"] = TPL_OLD
+before5["properties"]["definition"]["actions"]["Init_TemplateFilePath"]["runAfter"] = {}
+del before5["properties"]["connectionReferences"]["shared_sharepointonline"]["connection"]["name"]
+before5["properties"]["definition"]["templateName"] = ""
+FD5.clientdata = json.dumps({**after5, "properties": {**after5["properties"]}}, ensure_ascii=False)
+del a5["Create_file"]["inputs"]["authentication"]
+FD5.clientdata = json.dumps(after5, ensure_ascii=False)
+before5["properties"]["definition"]["actions"]["Create_file"]["inputs"]["authentication"] = \
+    "@json(decodeBase64(triggerOutputs().headers['X-MS-APIM-Tokens']))['$ConnectionKey']"
+(WORK / "zgloszenia/SPF-1/flow-przed.json").write_text(json.dumps({"clientdata": json.dumps(before5)}), encoding="utf-8")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    P.cmd_flow_diff(["SPF-1", DV, WF3, "flow-przed.json"])
+out_txt = buf.getvalue()
+expect("flow-diff: jedna zmiana merytoryczna", "Roznice merytoryczne: 1" in out_txt, True)
+expect("flow-diff: zmiana Set_variable_6", "Set_variable_6" in out_txt, True)
+expect("flow-diff: serializacja rozpoznana", "Roznice serializacji designera: 4" in out_txt, True)
+expect("flow-diff: te same connectionReferences", "connectionReferences: te same" in out_txt, True)
+saved = list((WORK / "zgloszenia/SPF-1").glob(f"flow-diff-{WF3}-*.json"))
+expect("flow-diff: wynik zapisany w katalogu zgloszenia", len(saved), 1)
+for label, args in [("plik spoza zgloszenia", ["SPF-1", DV, WF3, "../SPF-2/plan.md"]),
+                    ("plan.md", ["SPF-1", DV, WF3, "plan.md"]),
+                    ("Dataverse spoza listy", ["SPF-1", "https://obce.crm4.dynamics.com", WF3, "flow-przed.json"])]:
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            P.cmd_flow_diff(args)
+        expect(f"flow-diff: odrzucone: {label}", "przeszlo", "odmowa")
+    except SystemExit:
+        expect(f"flow-diff: odrzucone: {label}", "odmowa", "odmowa")
+expect("straznik: ppcall flow-diff", decision(f"{Q} flow-diff SPF-1 {DV} {WF3} flow-przed.json"), "allow")
+cfg["flow_patch_dataverse_urls"] = []
+C.save_config(cfg)
+
+print("32. 1.3.0 po przegladzie: wynik odczytu w routingu, parametry zapisu, kolizje nazw, nazwy plikow, flow-diff")
+cfg = C.load_config()
+cfg["flow_patch_dataverse_urls"] = [DV]
+C.save_config(cfg)
+
+
+def live5(changes, definition):
+    wf = {"ismanaged": False, "category": 5, "modifiedon": "m", "clientdata": json.dumps(definition)}
+    return C.flow_patch_live_problems({"oczekiwany_modifiedon": "m", "zmiany": changes}, wf)[0]
+
+
+OK5 = [{"sciezka": SETV, "bylo": TPL_OLD, "ma_byc": TPL_NEW}]
+expect("po przegladzie: przypadek z briefu nadal przechodzi", live5(OK5, DEF5), [])
+for label, change in [
+    ("wynik odczytu w id DeleteFile", lambda a: a.update(Usun=sp_action("DeleteFile", {"dataset": SPDS, "id": "@{body('Get_file_content_using_path')?['Id']}"}))),
+    ("wynik odczytu w uri Http", lambda a: a.update(H={"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "https://x/@{body('Get_file_content_using_path')}"}})),
+    ("wynik odczytu przez Compose do Http", lambda a: a.update(
+        Cmp={"type": "Compose", "runAfter": {}, "inputs": "@body('Get_file_content_using_path')"},
+        H={"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "@{outputs('Cmp')}"}})),
+    ("akcja nazwana jak zmienna w routingu", lambda a: (a["Switch"]["cases"]["Case_9"]["actions"].update(
+        TemplateFilePath=a["Switch"]["cases"]["Case_9"]["actions"].pop("Set_variable_6")),
+        a.update(H={"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "https://x/@{body('TemplateFilePath')}"}}))),
+    ("wynik settera czytany przez Compose", lambda a: a.update(Cmp={"type": "Compose", "runAfter": {}, "inputs": "@outputs('Set_variable_6')"})),
+    ("apiId spoza Microsoft", lambda a: a["Get_file_content_using_path"]["inputs"]["host"].update(apiId="https://evil.example/x/shared_sharepointonline")),
+    ("typ ApiConnection", lambda a: a["Get_file_content_using_path"].update(type="ApiConnection")),
+]:
+    d = variant(change)
+    path = SETV if "TemplateFilePath" not in str(d["properties"]["definition"]["actions"]["Switch"]["cases"]["Case_9"]["actions"].keys()) else SETV[:-3] + ["TemplateFilePath", "inputs", "value"]
+    expect(f"po przegladzie: odrzucone: {label}", bool(live5([{"sciezka": path, "bylo": TPL_OLD, "ma_byc": TPL_NEW}], d)), True)
+d_lit = variant(lambda a: a.update(Usun=sp_action("DeleteFile", {"dataset": SPDS, "id": "@{body('Get_metadata_literal')?['Id']}"})))
+expect("po przegladzie: literal path, wynik w DeleteFile",
+       bool(live5([{"sciezka": A5 + ["Get_metadata_literal", "inputs", "parameters", "path"],
+                    "bylo": "/Shared Documents/Rozliczenia niestandardowe/Template/stary.xlsx",
+                    "ma_byc": "/Shared Documents/Rozliczenia niestandardowe/Template/" + TPL_NEW}], d_lit)), True)
+d_w = variant(lambda a: a.update(Req=sp_action("HttpRequest", {"dataset": SPDS, "parameters/method": "GET", "parameters/uri": "_api/web"}),
+                                 Mv=sp_action("MoveFileAsync", {"dataset": SPDS, "destinationFolderPath": "/A"})))
+for label, path, old, new in [
+    ("SP HttpRequest parameters/method", A5 + ["Req", "inputs", "parameters", "parameters/method"], "GET", "DELETE"),
+    ("SP HttpRequest parameters/uri", A5 + ["Req", "inputs", "parameters", "parameters/uri"], "_api/web", "_api/x"),
+    ("MoveFile destinationFolderPath", A5 + ["Mv", "inputs", "parameters", "destinationFolderPath"], "/A", "/B"),
+    ("CreateFile folderPath", A5 + ["Create_file", "inputs", "parameters", "folderPath"], "/Shared Documents/Wyniki", "/X"),
+    ("CreateFile name", A5 + ["Create_file", "inputs", "parameters", "name"], "@variables('Filename')", "x.xlsx"),
+]:
+    static = C.flow_patch_path_problem(path)
+    expect(f"po przegladzie: zapis SP odrzucony: {label}", bool(static) or bool(live5([{"sciezka": path, "bylo": old, "ma_byc": new}], d_w)), True)
+expect("po przegladzie: CreateFile body nadal dozwolone",
+       live5([{"sciezka": A5 + ["Create_file", "inputs", "parameters", "body"], "bylo": "@body('Get_file_content_using_path')",
+               "ma_byc": "@body('Get_file_content_using_path')?['x']"}], DEF5), [])
+for bad in ["x／y.xlsx", "a‮xcod.xlsx", "a​.xlsx", "CON.xlsx", "a .xlsx", "a\x7f.xlsx"]:
+    expect(f"po przegladzie: nazwa odrzucona {bad!r}", bool(C.filename_problem(TPL_OLD, bad)), True)
+
+d_sec = copy.deepcopy(DEF5)
+d_sec["properties"]["definition"]["actions"]["H"] = {"type": "Http", "runAfter": {}, "inputs": {
+    "method": "GET", "uri": "https://x", "headers": {"X-Key": "sekretnyklucz"},
+    "authentication": {"type": "Basic", "username": "u", "password": "StaryHaslo1"}}}
+d_sec2 = copy.deepcopy(d_sec)
+d_sec2["properties"]["definition"]["actions"]["H"]["inputs"]["authentication"]["password"] = "NoweHaslo2"
+d_sec2["properties"]["definition"]["actions"]["H"]["inputs"]["headers"]["X-Key"] = "innyklucz"
+FD5.clientdata = json.dumps(d_sec2)
+(WORK / "zgloszenia/SPF-1/przed-hasla.json").write_text(json.dumps(d_sec), encoding="utf-8")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    P.cmd_flow_diff(["SPF-1", DV, WF3, "przed-hasla.json"])
+leak = [w for w in ("StaryHaslo1", "NoweHaslo2", "sekretnyklucz", "innyklucz") if w in buf.getvalue()]
+saved_texts = "".join(p.read_text(encoding="utf-8") for p in (WORK / "zgloszenia/SPF-1").glob("flow-diff-*.json"))
+leak += [w for w in ("StaryHaslo1", "NoweHaslo2", "sekretnyklucz", "innyklucz") if w in saved_texts]
+expect("flow-diff: hasla i naglowki zamaskowane (ekran i plik)", leak, [])
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        P.cmd_flow_diff(["SPF-1", DV, WF3, "PLAN.MD"])
+    expect("flow-diff: PLAN.MD odrzucony", "przeszlo", "odmowa")
+except SystemExit:
+    expect("flow-diff: PLAN.MD odrzucony", "odmowa", "odmowa")
+FD5.reset(definition=DEF5)
+cfg["flow_patch_dataverse_urls"] = []
+C.save_config(cfg)
+
+print("33. 1.3.0 po weryfikacji: request/url w InvokeHttp, result() zakresu")
+cfg = C.load_config()
+cfg["flow_patch_dataverse_urls"] = [DV]
+C.save_config(cfg)
+WEB = {"type": "OpenApiConnection", "runAfter": {}, "inputs": {
+    "host": {"connectionName": "shared_webcontents", "operationId": "InvokeHttp",
+             "apiId": "/providers/Microsoft.PowerApps/apis/shared_webcontents"},
+    "parameters": {"request/method": "GET", "request/url": "https://graph.microsoft.com/v1.0/me"}}}
+d_url = variant(lambda a: a.update(Web=copy.deepcopy(WEB)))
+expect("InvokeHttp: literal request/url odrzucony",
+       bool(C.flow_patch_path_problem(A5 + ["Web", "inputs", "parameters", "request/url"])), True)
+d_url2 = variant(lambda a: a.update(Init_U={"type": "InitializeVariable", "runAfter": {},
+                                            "inputs": {"variables": [{"name": "U", "type": "string", "value": "https://graph.microsoft.com"}]}},
+                                    Web={**copy.deepcopy(WEB), "inputs": {**WEB["inputs"], "parameters": {
+                                        "request/method": "GET", "request/url": "@{variables('U')}/v1.0/me"}}}))
+expect("InvokeHttp: zmienna w request/url odrzucona",
+       bool(live5([{"sciezka": A5 + ["Init_U", "inputs", "variables", "0", "value"], "bylo": "https://graph.microsoft.com",
+                    "ma_byc": "https://evil.example"}], d_url2)), True)
+d_res = variant(lambda a: (a.update(S={"type": "Scope", "runAfter": {}, "actions": {
+    "Get_file_content_using_path": a.pop("Get_file_content_using_path")}}),
+    a.update(Usun=sp_action("DeleteFile", {"dataset": SPDS, "id": "@{result('S')[0]['outputs']['body']['Id']}"}))))
+expect("result(zakres): wynik odczytu przez result() odrzucony", bool(live5(OK5, d_res)), True)
+expect("result(zakres): bez odwolania przechodzi", live5(OK5, variant(lambda a: a.update(S={"type": "Scope", "runAfter": {}, "actions": {
+    "Get_file_content_using_path": a.pop("Get_file_content_using_path")}}))), [])
+cfg["flow_patch_dataverse_urls"] = []
+C.save_config(cfg)
+
+print("34. 1.3.0: wynik odczytu tylko do akcji wbudowanych i tresci zapisu SharePoint")
+cfg = C.load_config()
+cfg["flow_patch_dataverse_urls"] = [DV]
+C.save_config(cfg)
+MAIL = {"type": "OpenApiConnection", "runAfter": {}, "inputs": {
+    "host": {"connectionName": "shared_office365", "operationId": "SendEmailV2",
+             "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"},
+    "parameters": {"emailMessage/To": "@{body('Get_file_content_using_path')?['adresat']}", "emailMessage/Body": "x"}}}
+for label, change in [
+    ("odbiorca maila z wyniku odczytu", lambda a: a.update(Mail=copy.deepcopy(MAIL))),
+    ("odbiorca maila przez Compose", lambda a: a.update(
+        Cmp={"type": "Compose", "runAfter": {}, "inputs": "@body('Get_file_content_using_path')"},
+        Mail={**copy.deepcopy(MAIL), "inputs": {**MAIL["inputs"], "parameters": {"emailMessage/To": "@{outputs('Cmp')}"}}})),
+    ("nazwa pliku w CreateFile z wyniku odczytu", lambda a: a["Create_file"]["inputs"]["parameters"].update(
+        name="@{body('Get_file_content_using_path')?['n']}")),
+]:
+    expect(f"wynik odczytu: odrzucone: {label}", bool(live5(OK5, variant(change))), True)
+expect("wynik odczytu: tresc CreateFile i Compose dozwolone", live5(OK5, variant(lambda a: a.update(
+    Cmp={"type": "Compose", "runAfter": {}, "inputs": "@body('Get_file_content_using_path')"}))), [])
+cfg["flow_patch_dataverse_urls"] = []
+C.save_config(cfg)
+
+print("35. 1.3.0: petla po wyniku odczytu i result() zakresu z wartoscia z pliku")
+cfg = C.load_config()
+cfg["flow_patch_dataverse_urls"] = [DV]
+C.save_config(cfg)
+HTTP_ITEM = {"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "@{item()}"}}
+for label, change in [
+    ("Foreach po wyniku odczytu, Http z item()", lambda a: a.update(
+        FE={"type": "Foreach", "runAfter": {}, "foreach": "@body('Get_file_content_using_path')?['wiersze']",
+            "actions": {"H": copy.deepcopy(HTTP_ITEM)}})),
+    ("Foreach po Compose z wyniku, CreateFile z item()", lambda a: a.update(
+        Cmp={"type": "Compose", "runAfter": {}, "inputs": "@body('Get_file_content_using_path')"},
+        FE={"type": "Foreach", "runAfter": {}, "foreach": "@outputs('Cmp')",
+            "actions": {"CF": sp_action("CreateFile", {"dataset": SPDS, "folderPath": "/X", "name": "@{item()}", "body": "x"})}})),
+    ("result() zakresu z Compose z wyniku", lambda a: a.update(
+        S={"type": "Scope", "runAfter": {}, "actions": {"Cmp": {"type": "Compose", "runAfter": {},
+                                                                "inputs": "@body('Get_file_content_using_path')"}}},
+        H={"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "@{result('S')}"}})),
+]:
+    expect(f"wynik odczytu: odrzucone: {label}", bool(live5(OK5, variant(change))), True)
+expect("Foreach niezalezny od pliku nie blokuje", live5(OK5, variant(lambda a: a.update(
+    FE={"type": "Foreach", "runAfter": {}, "foreach": "@triggerBody()?['x']", "actions": {"H": copy.deepcopy(HTTP_ITEM)}}))), [])
+cfg["flow_patch_dataverse_urls"] = []
+C.save_config(cfg)
+
+print("36. 1.3.0: dwa flow-diff w tej samej sekundzie")
+FD5.reset(definition=DEF5)
+(WORK / "zgloszenia/SPF-1/przed-sekunda.json").write_text(json.dumps(DEF5), encoding="utf-8")
+real_now = P.C.now
+P.C.now = lambda: real_now().replace(microsecond=0, second=7)
+try:
+    before_files = set((WORK / "zgloszenia/SPF-1").glob("flow-diff-*.json"))
+    for _ in range(2):
+        with contextlib.redirect_stdout(io.StringIO()):
+            P.cmd_flow_diff(["SPF-1", DV, WF3, "przed-sekunda.json"])
+    expect("flow-diff: dwa wyniki w tej samej sekundzie, bez bledu",
+           len(set((WORK / "zgloszenia/SPF-1").glob("flow-diff-*.json")) - before_files), 2)
+finally:
+    P.C.now = real_now
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

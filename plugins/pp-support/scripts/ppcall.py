@@ -11,6 +11,7 @@ Plan:        ppcall plan-new <ID> | plan-check <ID> | status <ID>
 Wykonanie:   ppcall exec <ID> <nr-kroku>     (tylko po akceptacji czlowieka)
 Odwolanie:   ppcall revoke <ID>
 Konfig:      ppcall konfiguracja   (albo config; tylko odczyt)
+Porownanie:  ppcall flow-diff <ID> <adres Dataverse> <workflowid> <plik sprzed zmiany>   (tylko odczyt)
 
 Tokeny sa pobierane wewnatrz procesu i nigdy nie sa wypisywane.
 """
@@ -697,14 +698,86 @@ def reverse_step(step: dict) -> dict:
                        for c in step["zmiany"]]}
 
 
-def flow_patch_preview(step: dict) -> list[str]:
+EVIDENCE_SECTION = "Dowód istnienia pliku"
+GRAPH = "https://graph.microsoft.com/v1.0"
+
+
+def sp_file_check(exc: dict) -> tuple[str, str]:
+    """Czy nowy plik istnieje w folderze (Graph). Zwraca (wynik, opis): jest, brak albo nie_sprawdzono."""
+    u = urllib.parse.urlparse(exc["dataset"])
+    site_path = urllib.parse.unquote(u.path).rstrip("/")
+    try:
+        st, pl = http("GET", f"{GRAPH}/sites/{u.hostname}" + (f":{site_path}" if site_path else "") + "?$select=id")
+        if st != 200:
+            return "nie_sprawdzono", f"witryna: HTTP {st}"
+        site_id = json.loads(pl)["id"]
+        st, pl = http("GET", f"{GRAPH}/sites/{site_id}/drives?$select=id,webUrl")
+        if st != 200:
+            return "nie_sprawdzono", f"biblioteki: HTTP {st}"
+        segments = [s for s in exc["folder"].split("/") if s]
+        drive, rest = None, []
+        for d in json.loads(pl).get("value") or []:
+            web = urllib.parse.unquote(urllib.parse.urlparse(str(d.get("webUrl", ""))).path).rstrip("/").lower()
+            if segments and web == f"{site_path}/{segments[0]}".lower():
+                drive, rest = d.get("id"), segments[1:]
+                break
+        if not drive:
+            return "nie_sprawdzono", f"nie rozpoznano biblioteki dla folderu {exc['folder']}"
+        item = "/".join(urllib.parse.quote(s, safe="") for s in rest + [exc["plik"]])
+        st, pl = http("GET", f"{GRAPH}/drives/{drive}/root:/{item}"
+                             "?$select=name,size,lastModifiedDateTime,lastModifiedBy")
+        if st == 404:
+            return "brak", f"nie ma pliku {exc['plik']} w {exc['folder']}"
+        if st != 200:
+            return "nie_sprawdzono", f"plik: HTTP {st}"
+        meta = json.loads(pl)
+        who = ((meta.get("lastModifiedBy") or {}).get("user") or {}).get("displayName") or "nieznany"
+        return "jest", f"{meta.get('name')}, zmieniony {meta.get('lastModifiedDateTime')} przez {who}"
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, OSError) as e:
+        return "nie_sprawdzono", str(e)[:200]
+
+
+def has_evidence(plan_text: str) -> bool:
+    return len(C._strip_comments(C.split_sections(plan_text).get(EVIDENCE_SECTION, ""))) >= 20
+
+
+def sp_exception_checks(step: dict, definition: dict, plan_text: str) -> tuple[list[str], list[dict]]:
+    """Wyjatek nazwy pliku SharePoint: oznaczenie i kontrola istnienia pliku (wariant B, decyzja z 2026-11-04).
+    Zwraca (bledy, opisy)."""
+    errs, done = [], []
+    for exc in C.flow_patch_exceptions(step, definition):
+        result, detail = sp_file_check(exc)
+        item = {**exc, "plik_sprawdzony": result, "szczegoly": detail}
+        if result == "brak":
+            errs.append(f"{exc['zmiana']}: {detail}")
+        elif result != "jest" and not has_evidence(plan_text):
+            errs.append(f"{exc['zmiana']}: nie da sie sprawdzic odczytem, czy plik {exc['plik']} istnieje ({detail}). "
+                        f"Dodaj do planu sekcje '## {EVIDENCE_SECTION}': kto, kiedy i gdzie sprawdzil plik.")
+        done.append(item)
+    return errs, done
+
+
+def describe_exception(item: dict) -> str:
+    mark = (f"[{C.SP_FILENAME_LABEL}] {item['zmiana']}: {item['stary_plik']} -> {item['plik']} "
+            f"w {item['folder']} ({item['dataset']}), czyta: {', '.join(item['akcje'])}")
+    if item["plik_sprawdzony"] == "jest":
+        return mark + f"\n      plik istnieje: {item['szczegoly']}"
+    return mark + f"\n      [istnienie pliku nie sprawdzone odczytem: dowod od czlowieka] ({item['szczegoly']})"
+
+
+def flow_patch_preview(step: dict, plan_text: str = "") -> list[str]:
     """Sprawdza krok na aktualnej definicji i wypisuje roznice. Zwraca bledy."""
     try:
         workflow = read_workflow(step)
     except RuntimeError as e:
         return [str(e)]
-    errs, _ = C.flow_patch_live_problems(step, workflow)
+    errs, definition = C.flow_patch_live_problems(step, workflow)
     out(f"  Flow: {workflow.get('name')} (modifiedon {workflow.get('modifiedon')}, statecode {workflow.get('statecode')})")
+    if definition is not None and not errs:
+        exc_errs, done = sp_exception_checks(step, definition, plan_text)
+        errs = errs + exc_errs
+        for item in done:
+            out("  " + describe_exception(item))
     for ch in step["zmiany"]:
         out(f"  - {C.flow_patch_label(ch['sciezka'])}\n      sciezka: {' / '.join(ch['sciezka'])}"
             f"\n      bylo:    {C.value_text(ch['bylo'], 4000)}\n      ma byc:  {C.value_text(ch['ma_byc'], 4000)}")
@@ -733,7 +806,7 @@ def cmd_plan_check(args: list[str]) -> None:
     for s in steps:
         out(f"  Krok {s['nr']}: {s['opis']}\n          {C.step_summary(s)}")
         if s["typ"] == "flow-patch":
-            live_errs.extend(f"krok {s['nr']}: {e}" for e in flow_patch_preview(s))
+            live_errs.extend(f"krok {s['nr']}: {e}" for e in flow_patch_preview(s, text))
         elif s["typ"] == "flow-definition":
             live_errs.extend(f"krok {s['nr']}: {e}" for e in flow_definition_preview(s, pp.parent))
     if live_errs:
@@ -787,6 +860,14 @@ def exec_flow_patch(incident_id: str, step: dict, entry: dict) -> bool:
     """Zapis definicji flow z kopia, If-Match i porownaniem po zapisie. Zwraca sukces."""
     before = read_workflow(step)
     errs, definition = C.flow_patch_live_problems(step, before)
+    if not errs and definition is not None:
+        plan_text = C.plan_path(Path.cwd(), incident_id).read_text(encoding="utf-8")
+        exc_errs, done = sp_exception_checks(step, definition, plan_text)
+        errs = errs + exc_errs
+        if done:
+            entry["wyjatek"] = done
+            for item in done:
+                out(describe_exception(item))
     if errs:
         entry["odmowa"] = errs
         out("Flow nie zgadza sie z zaakceptowanym planem, nic nie zapisano:\n  - " + "\n  - ".join(errs))
@@ -1153,10 +1234,129 @@ def cmd_config(_args: list[str]) -> None:
     out(json.dumps(C.load_config(), ensure_ascii=False, indent=2))
 
 
+# Roznice, ktore nowy designer Power Automate wprowadza przy zapisie bez zmiany dzialania (ITS-418).
+MISSING = object()
+
+
+def _noise(path: tuple, old, new) -> str | None:
+    last = path[-1] if path else ""
+    missing = MISSING
+    if last == "runAfter" and (old in ({}, missing) and new in ({}, missing)):
+        return "puste runAfter"
+    if path[-2:] == ("inputs", "authentication") and new is missing and "$connectionkey" in C.canon(old).lower():
+        return "inputs/authentication z $ConnectionKey"
+    if last == "additionalProperties" and "schema" in path and old is missing and new == {}:
+        return "dopisane puste additionalProperties w schemacie"
+    if last == "templateName" and old in ("", missing) and new in ("", missing):
+        return "pusty templateName"
+    if (len(path) == 5 and path[:2] == ("properties", "connectionReferences") and path[3:] == ("connection", "name")
+            and old is missing):
+        return "dopisane connection.name w connectionReferences"
+    return None
+
+
+def cmd_flow_diff(args: list[str]) -> None:
+    usage = "Uzycie: ppcall flow-diff <ID> <adres Dataverse> <workflowid> <plik definicji sprzed zmiany w katalogu zgloszenia>"
+    if len(args) != 4 or not C.valid_id(args[0]) or not C.GUID_RE.fullmatch(args[2]):
+        fail(usage)
+    incident, dataverse, wf, name = args[0], args[1].rstrip("/"), args[2], args[3]
+    if dataverse.lower() not in [u.rstrip("/").lower() for u in C.load_config().get("dataverse_urls") or []]:
+        fail(f"{dataverse} nie jest na liscie dataverse_urls w ustawieniach pluginu.")
+    folder = C.incident_dir(Path.cwd(), incident)
+    src = (folder / name).resolve()
+    try:
+        inside = src.is_relative_to(folder.resolve()) and src.parent == folder.resolve()
+    except (OSError, ValueError):
+        inside = False
+    if not inside or not src.is_file() or src.name.lower() in C.RESERVED_INCIDENT_FILES:
+        fail(f"Plik definicji musi lezec bezposrednio w {folder}.")
+    try:
+        before = json.loads(src.read_text(encoding="utf-8"))
+        if isinstance(before, dict) and isinstance(before.get("clientdata"), str):
+            before = json.loads(before["clientdata"])
+        step = {"srodowisko": dataverse, "workflowid": wf}
+        record = read_workflow(step)
+        after = json.loads(record["clientdata"])
+    except (RuntimeError, ValueError, KeyError, TypeError) as e:
+        fail(f"Nie mozna odczytac definicji: {e}")
+    missing = MISSING
+
+    def at(d, p):
+        try:
+            return C.get_at(d, [str(k) for k in p])
+        except KeyError:
+            return missing
+
+    before_r, after_r = C.redact_secrets(before), C.redact_secrets(after)
+
+    def show(p, v):
+        if v is missing:
+            return "(brak)"
+        if any(C.SECRET_KEY_RE.search(str(k)) for k in p) or any(str(k).lower() in ("authentication", "headers") for k in p):
+            return "***"
+        return C.value_text(v, 300)
+
+    real, noise = [], {}
+    for p in C.leaf_diff(before, after):
+        old, new = at(before, p), at(after, p)
+        kind = _noise(p, old, new)
+        if kind:
+            noise.setdefault(kind, []).append(" / ".join(p))
+        else:
+            real.append({"sciezka": " / ".join(p), "bylo": show(p, at(before_r, p)), "jest": show(p, at(after_r, p))})
+
+    def refs(d):
+        out_ = {}
+        for key, ref in ((C.get_at(d, ["properties", "connectionReferences"]) if at(d, ("properties", "connectionReferences")) is not missing else {}) or {}).items():
+            conn = ref.get("connection") if isinstance(ref, dict) else None
+            logical = conn.get("connectionReferenceLogicalName") if isinstance(conn, dict) else None
+            out_[key] = logical
+        return out_
+
+    refs_before, refs_after = refs(before), refs(after)
+    connections = {}
+    for logical in sorted({v for v in refs_after.values() if isinstance(v, str) and re.fullmatch(r"[\w.-]{1,100}", v)}):
+        st, pl = http("GET", f"{dataverse}/api/data/v9.2/connectionreferences?$select=connectionid"
+                             f"&$filter=connectionreferencelogicalname eq '{logical}'")
+        try:
+            rows = json.loads(pl).get("value") if st == 200 else None
+        except (ValueError, AttributeError):
+            rows = None
+        connections[logical] = [r.get("connectionid") for r in rows] if rows is not None else f"HTTP {st}"
+    result = {"czas": C.now().isoformat(), "flow": record.get("name"), "workflowid": wf,
+              "modifiedon": record.get("modifiedon"), "plik_przed": src.name,
+              "roznice_merytoryczne": real, "roznice_serializacji": {k: len(v) for k, v in noise.items()},
+              "serializacja_sciezki": noise,
+              "connectionReferences": {"te_same": refs_before == refs_after, "przed": refs_before,
+                                       "po": refs_after, "connectionid_teraz": connections}}
+    base = f"flow-diff-{wf}-{C.now().strftime('%Y%m%dT%H%M%SZ')}"
+    for n in range(1000):  # dwa porownania w tej samej sekundzie: kolejny numer, nigdy nadpisanie
+        target = folder / (f"{base}.json" if n == 0 else f"{base}-{n}.json")
+        try:
+            with open(target, "x", encoding="utf-8") as f:  # nowy plik, nigdy przez istniejace dowiazanie
+                f.write(json.dumps(result, ensure_ascii=False, indent=1))
+            break
+        except FileExistsError:
+            continue
+    else:
+        fail("Nie mozna utworzyc pliku wyniku flow-diff (zbyt wiele plikow z tym samym czasem).")
+    C.audit({"typ": "flow-diff", "id": incident, "flow": wf, "merytoryczne": len(real),
+             "serializacja": sum(len(v) for v in noise.values())})
+    out(f"Flow: {record.get('name')} (modifiedon {record.get('modifiedon')})")
+    out(f"Roznice merytoryczne: {len(real)}")
+    for r in real[:50]:
+        out(f"  - {r['sciezka']}\n      bylo: {r['bylo']}\n      jest: {r['jest']}")
+    out(f"Roznice serializacji designera: {sum(len(v) for v in noise.values())} "
+        + ", ".join(f"{k}: {len(v)}" for k, v in noise.items()))
+    out(f"connectionReferences: {'te same' if refs_before == refs_after else 'ROZNE'}; connectionid teraz: "
+        + json.dumps(connections, ensure_ascii=False))
+    out(f"Zapisano {target}")
+
+
 COMMANDS = {
     "get": cmd_get, "dostepy": cmd_dostepy, "rejestr": cmd_rejestr,
     "plan-new": cmd_plan_new, "plan-check": cmd_plan_check, "status": cmd_status,
-    "exec": cmd_exec, "revoke": cmd_revoke, "config": cmd_config, "konfiguracja": cmd_config, "runs": cmd_runs,
+    "exec": cmd_exec, "revoke": cmd_revoke, "config": cmd_config, "konfiguracja": cmd_config, "flow-diff": cmd_flow_diff, "runs": cmd_runs,
     "verify": cmd_verify,
 }
 

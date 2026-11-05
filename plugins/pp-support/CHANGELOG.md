@@ -1,5 +1,23 @@
 # Zmiany w pp-support
 
+## 1.3.0 (2026-11-04)
+
+ITS-418, decyzja Michała Kaszty z 2026-11-04 (wariant B).
+
+- `flow-patch`: wyjątek dla nazwy pliku czytanego przez akcję SharePoint tylko do odczytu (`GetFileContentByPath`, `GetFileMetadataByPath`). Zmienna albo tekst `path` może zmienić sam ostatni segment ścieżki przy stałym folderze i witrynie, gdy wartość nie trafia do żadnej innej akcji, a stara i nowa wartość to sama nazwa pliku z tym samym rozszerzeniem. `plan-check` i `exec` sprawdzają przez Graph, czy nowy plik istnieje (404 odrzuca); bez dostępu wymagana jest sekcja „Dowód istnienia pliku”. Krok jest oznaczony w `plan-check` i w dzienniku wykonania.
+- `dataset` jest kluczem zabronionym w `flow-patch` i `flow-definition`. W akcjach zapisu, przeniesienia i usuwania SharePoint wszystkie parametry poza treścią pliku liczą się jako adres, więc zmiennej użytej w `CreateFile` albo `DeleteFile` nie zmieni się krokiem planu.
+- Po przeglądzie bezpieczeństwa:
+  - Wyjątek nie działa, gdy wynik akcji odczytu trafia do adresu, identyfikatora albo uwierzytelnienia innej akcji (np. `id` w `DeleteFile`, adres Http), także przez Compose. Nie działa też, gdy wynik akcji ustawiającej zmienną czyta inna akcja, i przy kolizji nazwy akcji z nazwą zmiennej.
+  - Wyjątek obejmuje tylko `OpenApiConnection` z dokładnym `apiId` SharePoint.
+  - Nazwa pliku nie może zawierać znaków niewidocznych, sterujących ani zastępczych (Unicode), nie może też być nazwą zarezerwowaną Windows.
+  - W akcjach zapisu SharePoint `flow-patch` zmienia tylko treść (`body`). Spłaszczone klucze OpenApiConnection (`parameters/method`, `parameters/uri`) są sprawdzane segment po segmencie.
+  - `flow-diff` maskuje wartości pod `authentication`, `headers` i kluczami z hasłami (na ekranie i w pliku) i tworzy plik wyniku jako nowy.
+  - Kontrola istnienia pliku traktuje błędy sieci jako „nie sprawdzono”.
+  - Wynik akcji odczytu i wszystko z niego wyliczone może trafić tylko do akcji wbudowanych i do treści (`body`) zapisu SharePoint. Inne użycie, np. odbiorca maila, wyłącza wyjątek.
+  - Pętla (Foreach, Until) po wartości wyliczonej z pliku i `result()` zakresu z taką wartością liczą się jako jej użycie. Wynik `flow-diff` ma unikalną nazwę także przy dwóch porównaniach w tej samej sekundzie.
+  - `url`, `baseurl`, `siteurl` i `resourceuri` są kluczami zabronionymi (np. `request/url` w akcji HTTP z Entra ID, luka sprzed 1.3.0). `result('<zakres>')` liczy się jako odwołanie do wszystkich akcji w zakresie.
+- `ppcall flow-diff <ID> <adres Dataverse> <workflowid> <plik>`: porównanie definicji po zmianie ręcznej, z różnicami merytorycznymi osobno od zmian serializacji designera i ze sprawdzeniem `connectionReferences`; wynik w katalogu zgłoszenia.
+
 ## 1.2.5 (2026-11-04)
 
 - Strażnik, rozmowa dyżurna: grupa opcji bash zawierająca `o` i `c` (`bash -oc pipefail "…"`, `-eoc`) jest odrzucana przed rozpoznaniem `-c`, bo kod jest wtedy w drugim argumencie, nie w pierwszym (poprawka nie zdążyła do #12).
