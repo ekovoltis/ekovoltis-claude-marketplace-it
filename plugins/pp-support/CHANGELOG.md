@@ -1,5 +1,9 @@
 # Zmiany w pp-support
 
+## 1.2.5 (2026-11-04)
+
+- Strażnik, rozmowa dyżurna: grupa opcji bash zawierająca `o` i `c` (`bash -oc pipefail "…"`, `-eoc`) jest odrzucana przed rozpoznaniem `-c`, bo kod jest wtedy w drugim argumencie, nie w pierwszym (poprawka nie zdążyła do #12).
+
 ## 1.2.4 (2026-11-04)
 
 - Strażnik, rozmowa dyżurna: rekurencja w PowerShell uruchomionym bez `-Command` (`powershell Get-ChildItem ~ -Recurse`; Windows PowerShell 5.1 traktuje argumenty jak polecenie) jest blokowana. Opcje `pwsh`/`powershell` są rozpoznawane po prefiksie, jak w PowerShell (`-Execution Bypass`, `-ExecutionPolicy:Bypass`, `-cwa`, `/command`), a nieznana opcja przed poleceniem kończy się odmową zamiast zgadywania, gdzie polecenie się zaczyna. `-File skrypt.ps1` nie jest traktowane jak polecenie.
