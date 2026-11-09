@@ -1000,6 +1000,7 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
                             f"a akcja ma typ {actual}")
         set_at(changed, ch["sciezka"], ch["ma_byc"])
     sensitive = sensitive_refs(definition)
+    errs.extend(execution_order_problems(definition, changed))
     # zrodla wstawek ze starej i z nowej definicji: krok moze podlaczyc nowe zrodlo do zapytania
     sql_sources = sql_insert_sources(definition)
     for ref, names in sql_insert_sources(changed).items():
@@ -1051,7 +1052,9 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
         allowed = {("var", str(exception.get("zmienna", "")).lower())} if exception and exception.get("zmienna") else set()
         if exception and ANY_REF not in sensitive and refs_hit <= allowed:
             pass  # wyjatek: tylko zmienna z nazwa pliku, nic innego zaleznego od tej akcji
-        elif hit and flow_patch_required_type(ch["sciezka"]) != ("*",):
+        elif hit:
+            # Od 1.4.2 (decyzja Michala Kaszty z 2026-11-09) takze runAfter: zmiana kolejnosci akcji ustawiajacych
+            # wartosc adresu wybiera, ktora wartosc dostanie akcja wysylajaca.
             if why:
                 errs.append(f"{flow_patch_label(ch['sciezka'])}: wyjatek dla nazwy pliku SharePoint nie ma zastosowania: {why}")
             errs.append(f"{flow_patch_label(ch['sciezka'])}: akcja ustawia {', '.join(hit)}, z czego akcja wysylajaca "
@@ -1948,7 +1951,9 @@ _ITERATION_DYNAMIC_RE = re.compile(r"\biterationIndexes\s*\((?!\s*')", re.I)
 _ITEM_RE = re.compile(r"\bitem\s*\(\s*\)", re.I)
 # Akcje, w ktorych item() poza polem 'from' oznacza biezacy element ich wlasnej tablicy, a nie petli.
 IMPLICIT_ITEM_TYPES = {"select", "query", "table"}
-CONTROL_TYPES = {"if", "switch", "until", "foreach"}
+# Zakresy nad zrodlem wartosci: warunek decyduje, czy i ktora wartosc zrodlo ustawi, a runAfter zakresu (takze
+# Scope, od 1.4.2) decyduje, kiedy ja ustawi wzgledem akcji wysylajacej.
+CONTROL_TYPES = {"if", "switch", "until", "foreach", "scope"}
 
 
 def _expr_refs(text: str) -> set:
@@ -1984,10 +1989,25 @@ def sensitive_refs(definition: dict) -> set:
         actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
     except KeyError:
         return set()
-    seeds = []
-    for _, (where, action) in actions.items():
+    return _dependency_closure(actions, [s for seeds in _sender_seeds(actions).values() for s in seeds])
+
+
+def sender_refs(definition: dict) -> dict:
+    """Dla kazdej akcji wysylajacej (nazwa malymi literami): od czego zalezy jej adres (domkniecie)."""
+    try:
+        actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
+    except KeyError:
+        return {}
+    return {n.lower(): _dependency_closure(actions, seeds) for n, seeds in _sender_seeds(actions).items()}
+
+
+def _sender_seeds(actions: dict) -> dict:
+    """Akcja wysylajaca -> teksty (z polozeniem), z ktorych bierze adres, naglowki, uwierzytelnienie, polaczenie."""
+    out: dict = {}
+    for name, (where, action) in actions.items():
         if str(action_type(action) or "").lower() in FLOW_SAFE_TYPES:
             continue
+        seeds = out.setdefault(name, [])
         own = _own_body(action)
         values: list = []
         _routing_values(own, values)
@@ -2005,7 +2025,7 @@ def sensitive_refs(definition: dict) -> set:
             if isinstance(params, dict):
                 values.extend(v for k, v in params.items() if not _sql_query_key(k))
         seeds.extend((canon(v), where) for v in values)  # akcja wysylajaca: item() to element petli, w ktorej lezy
-    return _dependency_closure(actions, seeds)
+    return out
 
 
 def _dependency_closure(actions: dict, seeds: list) -> set:
@@ -2064,6 +2084,145 @@ def _dependency_closure(actions: dict, seeds: list) -> set:
         for src in sources:
             scan_source(src)
     return found
+
+
+# ---------------------------------------------------------------- kolejnosc wykonania (1.4.2)
+# Decyzja Michala Kaszty z 2026-11-09 (opcja b): krok nie moze zmienic, czy akcja ustawiajaca wartosc wrazliwa
+# wykonuje sie przed akcja wysylajaca albo po niej, ani kolejnosci dwoch akcji ustawiajacych te sama wartosc.
+# Inaczej wysylka dostalaby inna, juz istniejaca wartosc adresu (np. SetGood/SetEvil, przepiete Http).
+
+def _exec_order(definition: dict):
+    """(akcje, lancuch przodkow kazdej akcji, bezposrednie runAfter w zakresie)."""
+    try:
+        actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
+    except KeyError:
+        return {}, {}, {}
+    chains, preds = {}, {}
+    for n, (where, a) in actions.items():
+        chain, w = [], ()
+        for part in where:
+            chain.append((w, part[0].lower()))
+            w = w + (part,)
+        chain.append((w, n.lower()))
+        chains[n.lower()] = chain
+        ra = a.get("runAfter") if isinstance(a, dict) else None
+        preds[(w, n.lower())] = {str(k).lower() for k in ra} if isinstance(ra, dict) else set()
+    return actions, chains, preds
+
+
+def _reaches(preds: dict, scope: tuple, start: str, goal: str) -> bool:
+    """Czy goal jest (posrednio) w runAfter akcji start w tym samym zakresie."""
+    seen, todo = set(), [start]
+    while todo:
+        cur = todo.pop()
+        for p in preds.get((scope, cur), ()):
+            if p == goal:
+                return True
+            if p not in seen:
+                seen.add(p)
+                todo.append(p)
+    return False
+
+
+def _relation(chains: dict, preds: dict, x: str, y: str) -> str:
+    """przed / po / zagniezdzone / niezalezne (galezie rownolegle albo rozne galezie warunku)."""
+    cx, cy = chains[x], chains[y]
+    i = 0
+    while i < min(len(cx), len(cy)) and cx[i] == cy[i]:
+        i += 1
+    if i == len(cx) or i == len(cy):
+        return "zagniezdzone"
+    (wx, nx), (wy, ny) = cx[i], cy[i]
+    if wx != wy:
+        return "wylaczne"  # rozne galezie warunku albo przypadki Switch
+    if _reaches(preds, wx, ny, nx):
+        return "przed"
+    if _reaches(preds, wx, nx, ny):
+        return "po"
+    return "rownolegle"  # wyscig: wynik zalezy od czasu wykonania galezi
+
+
+def _timing_set(chains: dict, preds: dict, x: str, y: str) -> set:
+    """Akcje, od ktorych zalezy czas wykonania x i y: przodkowie obu oraz domkniecie runAfter kazdego elementu
+    lancucha w jego zakresie."""
+    out: set = set()
+    for name in (x, y):
+        for scope, n in chains[name]:
+            out.add(n)
+            todo = [n]
+            while todo:
+                cur = todo.pop()
+                for p in preds.get((scope, cur), ()):
+                    if p not in out:
+                        out.add(p)
+                        todo.append(p)
+    return out
+
+
+def execution_order_problems(old: dict, new: dict) -> list[str]:
+    """Zmiany kolejnosci miedzy akcjami ustawiajacymi wartosci wrazliwe a akcjami wysylajacymi."""
+    sensitive = sensitive_refs(old) | sensitive_refs(new)
+    if not sensitive:
+        return []
+    o_actions, o_chains, o_preds = _exec_order(old)
+    n_actions, n_chains, n_preds = _exec_order(new)
+    common = set(o_chains) & set(n_chains)
+    by_old = {n.lower(): a for n, (_, a) in o_actions.items()}
+    by_new = {n.lower(): a for n, (_, a) in n_actions.items()}
+    setters: dict = {}
+    for n in common:
+        refs = (defines(n, by_old[n]) | defines(n, by_new[n])) & sensitive
+        if ANY_REF in sensitive:
+            refs = refs | {ANY_REF}
+        if refs:
+            setters[n] = refs
+    senders = {n for n in common if str(action_type(by_old[n]) or "").lower() not in FLOW_SAFE_TYPES
+               or str(action_type(by_new[n]) or "").lower() not in FLOW_SAFE_TYPES}
+    errs: list = []
+    # para tylko wtedy, gdy adres tej akcji wysylajacej zalezy od wartosci ustawianej przez te akcje
+    per_sender: dict = {}
+    for refs_map in (sender_refs(old), sender_refs(new)):
+        for h, refs in refs_map.items():
+            per_sender.setdefault(h, set()).update(refs)
+    # Posrednicy (Compose czytajacy zmienna z adresem itp.) tez "odbieraja" wartosc w chwili wykonania, wiec ich
+    # kolejnosc wzgledem akcji ustawiajacych jest sprawdzana jak kolejnosc akcji wysylajacej.
+    readers = {n for n in common if ("act", n) in sensitive and n not in senders}
+    for defn, acts in ((old, o_actions), (new, n_actions)):
+        for name, (where, a) in acts.items():
+            if name.lower() in readers:
+                per_sender.setdefault(name.lower(), set()).update(
+                    _dependency_closure(acts, [(canon(_own_body(a)), where)]))
+    pairs = []
+    for h in senders | readers:
+        deps = per_sender.get(h, set())
+        related = [s for s in setters if s != h and (ANY_REF in deps or setters[s] & deps)]
+        pairs += [(s, h) for s in related]
+        related.sort()
+        pairs += [(a, b) for i, a in enumerate(related) for b in related[i + 1:]
+                  if (setters[a] & setters[b] & deps) - {("act", a), ("act", b)}]
+    # akcje, ktorych zmiana w kroku moze zmienic czas wykonania: dodane; Wait, petle, zakresy, warunki i konektory
+    # przy kazdej zmianie; akcje wbudowane na danych (Compose, zmienne, Select...) tylko przy zmianie runAfter, typu
+    # albo runtimeConfiguration (zmiana samej wartosci kontroluje sensitive_hit)
+    def _timing_view(a: dict) -> str:
+        own = _own_body(a)
+        if str(action_type(a) or "").lower() in FLOW_SAFE_TYPES - {"wait", "until", "foreach", "scope", "if", "switch"}:
+            own = {k: v for k, v in own.items() if str(k).lower() in ("runafter", "type", "runtimeconfiguration")}
+        return canon(own)
+    touched = {n for n in n_chains if n not in by_old or _timing_view(by_old[n]) != _timing_view(by_new[n])}
+    for x, y in pairs:
+        before, after = _relation(o_chains, o_preds, x, y), _relation(n_chains, n_preds, x, y)
+        if before != after:
+            errs.append(f"zmiana kolejnosci wykonania: {x} wzgledem {y} ({before} -> {after}); od kolejnosci zalezy "
+                        "adres, naglowki albo uwierzytelnienie akcji wysylajacej")
+        elif after == "rownolegle":
+            # wyscig: krok nie moze zmienic niczego, od czego zalezy czas wykonania obu galezi (Wait, Until, petla)
+            ts = _timing_set(o_chains, o_preds, x, y) | _timing_set(n_chains, n_preds, x, y)
+            # takze akcja w srodku przodka (np. Wait w Scope poprzedzajacym akcje wysylajaca)
+            hit = sorted(t for t in touched if any(p in ts for _, p in n_chains.get(t, [])))
+            if hit:
+                errs.append(f"{x} i {y} wykonuja sie rownolegle, a krok zmienia {', '.join(hit[:3])}, od czego zalezy, "
+                            "ktora wartosc adresu wygra")
+    return sorted(set(errs))
 
 
 def sensitive_hit(defs: set, sensitive: set) -> list[str]:
@@ -2177,6 +2336,7 @@ def flow_definition_live_problems(step: dict, workflow: dict, new: dict,
         errs.append(f"najwyzej {FLOW_DEFINITION_MAX_ACTIONS} akcji dodanych, usunietych lub zmienionych w jednym "
                     f"kroku (jest {len(changes)})")
     if not restoring:
+        errs.extend(execution_order_problems(old, new))
         sensitive = sensitive_refs(old) | sensitive_refs(new)
         sql_sources = sql_insert_sources(old)
         for ref, names in sql_insert_sources(new).items():

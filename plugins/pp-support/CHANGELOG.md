@@ -1,5 +1,13 @@
 # Zmiany w pp-support
 
+## 1.4.2 (2026-11-09)
+
+Decyzja Michała Kaszty z 2026-11-09 (przegląd bezpieczeństwa 1.4.1, opcja a).
+
+- `flow-patch`: zmiana `runAfter` akcji, od której zależy adres, nagłówki, uwierzytelnienie albo połączenie akcji wysyłającej (`sensitive_hit` po `defines`), jest odrzucana jak każda inna zmiana takiej akcji. Wcześniej `runAfter` było z tej kontroli wyjęte, więc zamiana kolejności dwóch akcji ustawiających tę samą zmienną adresu (np. `SetGood` i `SetEvil`) albo zmiana statusu w `runAfter` wybierała inną, już istniejącą wartość adresu. `flow-definition` odrzucało przestawienie takich akcji już wcześniej (test regresji dodany). Zmiany `runAfter` innych akcji, także w ITS-418 (plan A), przechodzą jak dotąd.
+- Scope obejmujący akcję ustawiającą wartość adresu też jest wrażliwy (jak If, Switch, Until, Foreach), więc przestawienie takiego zakresu jest odrzucane.
+- Kolejność wykonania (decyzja Michała Kaszty z 2026-11-09, opcja b): `flow-patch` i `flow-definition` porównują w starej i nowej definicji relację „wykonuje się przed” między każdą akcją ustawiającą wartość wrażliwą a każdą akcją wysyłającą oraz między akcjami ustawiającymi tę samą wartość (z uwzględnieniem zakresów: Scope, warunki, pętle). Zmiana tej relacji jest odrzucana, także gdy dokonuje jej akcja niewrażliwa (przepięcie `runAfter` samej akcji Http, akcja pośrednicząca przy równoległej gałęzi). Pary są brane tylko wtedy, gdy adres danej akcji wysyłającej zależy od wartości ustawianej przez tę akcję. Gdy akcja ustawiająca i wysyłająca (albo dwie ustawiające) wykonują się równolegle, krok nie może zmienić ani dodać akcji, od której zależy czas wykonania obu gałęzi (przodkowie i `runAfter` w zakresie: Wait, Until, pętla, także akcje wewnątrz przodka). Akcje pośredniczące, których wynik trafia do adresu (np. Compose czytający zmienną z adresem), są sprawdzane jak akcje wysyłające. Znane ograniczenie: zmiana statusów w `runAfter` akcji pośredniczącej (np. `Succeeded` na `Failed`), która decyduje, czy akcja ustawiająca w ogóle się wykona, nie jest wykrywana.
+
 ## 1.4.1 (2026-11-09)
 
 ITS-418, decyzja Michała Kaszty z 2026-11-09.
