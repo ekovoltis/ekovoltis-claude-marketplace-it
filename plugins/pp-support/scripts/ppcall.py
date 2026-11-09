@@ -1415,7 +1415,7 @@ def _sql_error(e: Exception, secrets: list[str]) -> str:
 
 def run_sql(server: str, db: str, query: str, max_rows: int, timeout_s: int) -> tuple[list[str], list[list], bool]:
     """Wykonuje sprawdzone zapytanie w transakcji wycofywanej po odczycie. Zwraca (kolumny, wiersze, obcieto)."""
-    problem = C.sql_endpoint_problem(C.load_config(), server, db) or C.sql_query_problem(query)
+    problem = C.sql_endpoint_problem(C.load_config(), server, db) or C.sql_query_problem(query, db)
     if problem:
         raise RuntimeError(problem)
     problem = sql_driver_problem()
@@ -1495,7 +1495,7 @@ def cmd_sql(args: list[str]) -> None:
         fail("--out: plik wyniku ppcall sql ma rozszerzenie .json.")
     target = C.sql_out_path(out_file)
     problem = (C.out_path_problem(Path.cwd(), out_file) or C.out_path_problem(Path.cwd(), target)
-               or C.sql_endpoint_problem(C.load_config(), server, db) or C.sql_query_problem(query))
+               or C.sql_endpoint_problem(C.load_config(), server, db) or C.sql_query_problem(query, db))
     if problem:
         C.audit({"typ": "odmowa-sql", "serwer": server, "baza": db, "zapytanie": query, "powod": problem})
         fail(problem, 3)

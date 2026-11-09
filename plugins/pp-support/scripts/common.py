@@ -499,7 +499,7 @@ def _strip_sql(query: str) -> tuple[str | None, str | None]:
     return "".join(out), None
 
 
-def sql_query_problem(query: str) -> str | None:
+def sql_query_problem(query: str, db: str | None = None) -> str | None:
     """Jedno polecenie SELECT albo WITH ... SELECT. Sprawdzaja hook i ppcall przed wyslaniem do serwera."""
     q = query or ""
     if not q.strip():
@@ -541,6 +541,40 @@ def sql_query_problem(query: str) -> str | None:
     if main_selects != 1:
         return ("ppcall sql: dozwolone jest jedno polecenie SELECT (zapytania laczy UNION, EXCEPT, INTERSECT); "
                 f"znaleziono {main_selects}.")
+    return sql_names_problem(tokens, db)
+
+
+def sql_names_problem(tokens: list[str], db: str | None) -> str | None:
+    """Nazwy wieloczesciowe tylko w bazie z listy: <baza>.<schemat>.<obiekt>[.<kolumna>]. Nazwa trzyczesciowa
+    z inna pierwsza czescia (inna baza tej samej hurtowni) i dluzsze niz cztery czesci sa odrzucane."""
+    i, n = 0, len(tokens)
+    while i < n:
+        if tokens[i] == "." or (i + 1 < n and tokens[i + 1] == "."):
+            start, parts, expect_word = i, [], tokens[i] != "."
+            if tokens[i] == ".":
+                parts.append("")
+            while i < n:
+                t = tokens[i]
+                if expect_word and t != ".":
+                    parts.append(t)
+                    expect_word = False
+                elif t == ".":
+                    if not expect_word:
+                        expect_word = True
+                    else:
+                        parts.append("")  # baza..obiekt (pominiety schemat)
+                else:
+                    break
+                i += 1
+            if len(parts) > 4:
+                return "ppcall sql: nazwa z wiecej niz czterema czesciami (serwer polaczony) jest niedozwolona."
+            if len(parts) in (3, 4) and (db is None or parts[0].upper() != db.strip().upper()):
+                return (f"ppcall sql: nazwa {'.'.join(parts).lower()} wskazuje inna baze niz {db or '(nieznana)'}. "
+                        "Uzyj schemat.tabela albo aliasu tabeli (alias.kolumna).")
+            if i == start:
+                i += 1
+            continue
+        i += 1
     return None
 
 

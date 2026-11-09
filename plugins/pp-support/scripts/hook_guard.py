@@ -632,7 +632,7 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
             if len(args) < 4 or not targets:
                 return "deny", ('Uzycie: ppcall sql <serwer> <baza> "<SELECT ...>" --out <katalog zgloszenia>/plik.json '
                                 "[--max-wierszy N] [--limit-czasu S]")
-            problem = C.sql_endpoint_problem(C.load_config(), args[1], args[2]) or C.sql_query_problem(args[3])
+            problem = C.sql_endpoint_problem(C.load_config(), args[1], args[2]) or C.sql_query_problem(args[3], args[2])
             if problem:
                 return "deny", problem
             for target in targets:
