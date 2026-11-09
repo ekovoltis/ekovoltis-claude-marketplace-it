@@ -1,4 +1,4 @@
-# pp-support 1.4.0
+# pp-support 1.4.1
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -115,6 +115,12 @@ Włącza go osobne ustawienie `flow_definition_dataverse_urls`.
 - `plan-check` pokazuje dodane, usunięte, zmienione i przeniesione akcje razem z treścią dodanych i zmienionych akcji.
 - `exec`: kopia w stanie, `kopie/<ID>/` (jej skrót trafia do rejestru kopii), `PATCH` z `If-Match`, odczyt po zapisie. Gdy zapisana definicja różni się od pliku albo zmienił się stan flow, `ppcall` przywraca kopię.
 - Wycofanie to nowy plan z krokiem `flow-definition` wskazującym kopię (`kopia_plan`, czyli `backup/<plik>`, i `kopia_sha256` z `wykonanie.jsonl`). `backup/<plik>` to odnośnik: `ppcall` i strażnik szukają kopii w stanie, najpierw w tym zgłoszeniu, potem po jednoznacznej nazwie w innych zgłoszeniach, więc wycofanie może być w nowym zgłoszeniu. Kopia z rejestru kopii może przywrócić usunięte akcje HTTP i konektorów, bo wraca do stanu sprzed zmiany; plik spoza rejestru podlega pełnym ograniczeniom.
+
+### Zapytania SQL w flow (1.4.1)
+
+- `flow-patch` może zmienić tekst zapytania akcji SQL (`ExecutePassThroughNativeQuery*`). Zapytanie, które było tylko odczytem (parser `ppcall sql`), musi nim zostać. Nowe wyrażenia `@{…}` mogą wstawiać tylko dane: zmienne i wyniki akcji po nazwie, funkcje typu `if`, `substring`, `length`, literały bez liter. `server` i `database` się nie zmieniają.
+- Krok zmieniający źródło wartości wstawianej do zapytania jest oznaczony w `plan-check` (`[zmienia dane wstawiane do zapytania SQL: …]`), a nowa stała wartość nie może zawierać `;`, apostrofu ani słów zapisu.
+- Znane ograniczenie: wartości wyliczane w czasie działania z danych (np. lista PPE z Dataverse wstawiana do `IN (…)`) trafiają do zapytania bez kontroli strażnika, tak jak przed 1.4.1.
 
 ### Korekty danych Dataverse
 
