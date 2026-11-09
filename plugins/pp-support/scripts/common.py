@@ -445,7 +445,7 @@ def sql_endpoint_problem(cfg: dict, server: str, db: str) -> str | None:
 
 def _strip_sql(query: str) -> tuple[str | None, str | None]:
     """Zapytanie bez komentarzy (takze zagniezdzonych) i z literalami tekstowymi zastapionymi ''.
-    Nazwy w [] i "" zostaja jako slowa, zeby nie ukrywaly slow kluczowych. Zwraca (tekst, problem)."""
+    Nazwy w [] i "" zostaja jako jedno slowo (inne znaki zamienione na _), zeby nie ukrywaly slow kluczowych. Zwraca (tekst, problem)."""
     out, i, n = [], 0, len(query)
     while i < n:
         ch, two = query[i], query[i:i + 2]
@@ -492,7 +492,10 @@ def _strip_sql(query: str) -> tuple[str | None, str | None]:
                     break
                 buf.append(query[i])
                 i += 1
-            out.append(" " + "".join(buf) + " ")
+            # Nazwa w [] albo "" to jeden identyfikator: [x ekovoltis] i [ekovoltis.x] to inne bazy niz ekovoltis,
+            # wiec spacje, kropki i inne znaki zamieniane sa na _, a slowo zostaje widoczne dla listy zakazanych.
+            name = re.sub(r"\W", "_", "".join(buf)) or "_"
+            out.append(" " + name + " ")
         else:
             out.append(ch)
             i += 1

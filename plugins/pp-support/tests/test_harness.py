@@ -2478,6 +2478,9 @@ for label, q in [
     ("inna baza (nazwa trzyczesciowa)", "SELECT * FROM innabaza.dbo.t"),
     ("inna baza z pominietym schematem", "SELECT * FROM innabaza..t"),
     ("nazwa piecioczesciowa", "SELECT * FROM a.b.c.d.e"),
+    ("kropka w nazwie w nawiasach", "SELECT * FROM [ekovoltis.x].dbo.t"),
+    ("kropka w nazwie w cudzyslowie", 'SELECT * FROM "ekovoltis.x".dbo.t'),
+    ("spacja w nazwie bazy", "SELECT * FROM [x ekovoltis].dbo.t"),
 ]:
     code, text = sql_run(SQLSRV, "ekovoltis", q, "--out", "zgloszenia/ITS-426/x.json")
     expect(f"sql: odrzucone przed wyslaniem: {label}", code, 3)
