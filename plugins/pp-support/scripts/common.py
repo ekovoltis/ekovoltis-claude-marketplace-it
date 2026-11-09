@@ -445,7 +445,7 @@ def sql_endpoint_problem(cfg: dict, server: str, db: str) -> str | None:
 
 def _strip_sql(query: str) -> tuple[str | None, str | None]:
     """Zapytanie bez komentarzy (takze zagniezdzonych) i z literalami tekstowymi zastapionymi ''.
-    Nazwy w [] i "" zostaja jako jedno slowo (inne znaki zamienione na _), zeby nie ukrywaly slow kluczowych. Zwraca (tekst, problem)."""
+    Nazwy w [] i "" to jedno slowo: zwykla nazwa ASCII bez zmian (slowa kluczowe nadal widoczne), inna jako Q$<n>. Zwraca (tekst, problem)."""
     out, i, n = [], 0, len(query)
     while i < n:
         ch, two = query[i], query[i:i + 2]
@@ -492,9 +492,12 @@ def _strip_sql(query: str) -> tuple[str | None, str | None]:
                     break
                 buf.append(query[i])
                 i += 1
-            # Nazwa w [] albo "" to jeden identyfikator: [x ekovoltis] i [ekovoltis.x] to inne bazy niz ekovoltis,
-            # wiec spacje, kropki i inne znaki zamieniane sa na _, a slowo zostaje widoczne dla listy zakazanych.
-            name = re.sub(r"\W", "_", "".join(buf)) or "_"
+            # Nazwa w [] albo "" to jeden identyfikator. Zwykla nazwa ASCII zostaje slowem (lista zakazanych ja
+            # widzi); kazda inna ([x ekovoltis], [ekovoltis.x], znaki spoza ASCII) staje sie nieprzezroczystym
+            # tokenem Q$<n>, ktory nie moze byc nazwa bazy z listy (SQL_DB_RE nie dopuszcza $).
+            name = "".join(buf)
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                name = f"Q${len(out)}"
             out.append(" " + name + " ")
         else:
             out.append(ch)
@@ -518,7 +521,8 @@ def sql_query_problem(query: str, db: str | None = None) -> str | None:
                     ("{", "nawias klamrowy (sekwencje ODBC {call ...})"), ("}", "nawias klamrowy")):
         if ch in stripped:
             return f"ppcall sql: niedozwolony {why}."
-    tokens = [t.upper() for t in _SQL_TOKEN_RE.findall(stripped)]
+    raw_tokens = _SQL_TOKEN_RE.findall(stripped)
+    tokens = [t.upper() for t in raw_tokens]
     if not tokens or tokens[0] not in ("SELECT", "WITH"):
         return "ppcall sql: zapytanie musi zaczynac sie od SELECT albo WITH (tylko odczyt)."
     bad = sorted({t for t in tokens if t in SQL_FORBIDDEN_WORDS})
@@ -544,7 +548,7 @@ def sql_query_problem(query: str, db: str | None = None) -> str | None:
     if main_selects != 1:
         return ("ppcall sql: dozwolone jest jedno polecenie SELECT (zapytania laczy UNION, EXCEPT, INTERSECT); "
                 f"znaleziono {main_selects}.")
-    return sql_names_problem(tokens, db)
+    return sql_names_problem(raw_tokens, db)
 
 
 def sql_names_problem(tokens: list[str], db: str | None) -> str | None:
@@ -571,7 +575,9 @@ def sql_names_problem(tokens: list[str], db: str | None) -> str | None:
                 i += 1
             if len(parts) > 4:
                 return "ppcall sql: nazwa z wiecej niz czterema czesciami (serwer polaczony) jest niedozwolona."
-            if len(parts) in (3, 4) and (db is None or parts[0].upper() != db.strip().upper()):
+            # porownanie tylko ASCII: upper() zamienia np. dotless i na I
+            if len(parts) in (3, 4) and (db is None or not parts[0].isascii()
+                                         or parts[0].lower() != db.strip().lower()):
                 return (f"ppcall sql: nazwa {'.'.join(parts).lower()} wskazuje inna baze niz {db or '(nieznana)'}. "
                         "Uzyj schemat.tabela albo aliasu tabeli (alias.kolumna).")
             if i == start:

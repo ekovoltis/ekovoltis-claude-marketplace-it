@@ -2481,6 +2481,8 @@ for label, q in [
     ("kropka w nazwie w nawiasach", "SELECT * FROM [ekovoltis.x].dbo.t"),
     ("kropka w nazwie w cudzyslowie", 'SELECT * FROM "ekovoltis.x".dbo.t'),
     ("spacja w nazwie bazy", "SELECT * FROM [x ekovoltis].dbo.t"),
+    ("baza z kropkowanym i (Unicode)", "SELECT * FROM ekovolt\u0131s.dbo.t"),
+    ("baza z kropkowanym i w nawiasach", "SELECT * FROM [ekovolt\u0131s].dbo.t"),
 ]:
     code, text = sql_run(SQLSRV, "ekovoltis", q, "--out", "zgloszenia/ITS-426/x.json")
     expect(f"sql: odrzucone przed wyslaniem: {label}", code, 3)
@@ -2490,6 +2492,7 @@ expect("sql: odrzucone nie dotarly do serwera", len(ODBC.connects), n_before)
 for label, q in [("literal z DROP i srednikiem", "SELECT 'DROP TABLE x; --' AS t"),
                  ("komentarz z DELETE", "SELECT 1 AS a /* DELETE; */"),
                  ("nazwa z baza z listy", "SELECT t.a FROM [ekovoltis].[dbo].[t] AS t"),
+                 ("polska nazwa kolumny w nawiasach", "SELECT [Wartość netto] AS w FROM dbo.t"),
                  ("CTE, UNION ALL, podzapytania", "WITH a AS (SELECT 1 AS x) SELECT x FROM a UNION ALL SELECT 2 "
                                                   "WHERE 1 IN (SELECT 1) ORDER BY 1 OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY")]:
     expect(f"sql: dozwolone: {label}", C.sql_query_problem(q, "ekovoltis"), None)
