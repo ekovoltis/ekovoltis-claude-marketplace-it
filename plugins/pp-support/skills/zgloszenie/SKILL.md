@@ -24,6 +24,7 @@ Cały ruch do Azure, Power Platform, Dataverse, SharePoint i Fabric idzie przez:
 | `get "<url>" [--out <katalog zgłoszenia>/plik] [--max-kb N] [--all]` | odczyt dowolnego API Microsoft z listy dozwolonych hostów; `--all` łączy wszystkie strony wyniku; `--out` zapisuje tylko w katalogu zgłoszenia, nigdy do `plan.md`, `wykonanie.jsonl` ani `weryfikacja.jsonl`. Z Dataverse przychodzą też nazwy lookupów i opcji (`...@OData.Community.Display.V1.FormattedValue`) |
 | `runs <env-id> <flow> --out <plik.jsonl> [--od D] [--do D] [--max N] [--akcje] [--wejscia A,B] [--wyjscia A,B]` | historia przebiegów flow do pliku, z wynikiem każdej akcji i treścią wejść lub wyjść wskazanych akcji (`trigger` to wyzwalacz) |
 | `runs <adres Dataverse> <workflowid> --out ...` | to samo dla flow znanego z Dataverse: środowisko i identyfikator w Flow API ustala `ppcall` |
+| `sql <serwer> <baza> "<SELECT ...>" --out <katalog zgłoszenia>/plik.json [--max-wierszy N] [--limit-czasu S]` | jedno zapytanie `SELECT` do hurtowni Fabric z `fabric_sql_endpoints` (tylko odczyt, bez akceptacji); wynik tylko do pliku w katalogu zgłoszenia, z `_DANE_OSOBOWE` w nazwie |
 | `konfiguracja` | ustawienia pluginu (tylko odczyt); plik konfiguracji leży w chronionym stanie, nie czytaj go `cat` |
 | `verify <ID>` | odczyty z sekcji „Weryfikacja po naprawie”, wynik do `weryfikacja.jsonl` |
 | `plan-new <ID>` | założenie katalogu zgłoszenia z `notatki.md` i `plan.md`; wypisuje jego pełną ścieżkę, której używaj w `--out` |
@@ -32,7 +33,7 @@ Cały ruch do Azure, Power Platform, Dataverse, SharePoint i Fabric idzie przez:
 | `exec <ID> <nr>` | wykonanie jednego kroku zaakceptowanego planu |
 | `revoke <ID>` | wycofanie akceptacji (zawsze dozwolone) |
 
-Adresy URL z parametrami zapytania zawsze ujmuj w cudzysłów. Bezpośrednie `curl`, `az rest`, `Invoke-RestMethod`, pobieranie tokenów oraz zmieniające polecenia `pac` i `az` są blokowane przez hook. Nie próbuj obchodzić blokad. Jeśli blokada przeszkadza w uzasadnionej diagnozie, powiedz o tym pracownikowi.
+Adresy URL z parametrami zapytania zawsze ujmuj w cudzysłów. Zapytanie SQL podawaj w jednej linii jako jeden argument w pojedynczym cudzysłowie `'...'`, bez średnika i komentarzy. W PowerShell także adresy dla `ppcall get` podawaj w `'...'` (np. `'...?$top=5'`), bo `$`, nawiasy i backtick poza `'...'` strażnik odrzuca; apostrof w literale podwajaj tak, jak wymaga powłoka. Wyniku `ppcall` nie przekierowuj do pliku (`>`), zapisuj go przez `--out`. Bezpośrednie `curl`, `sqlcmd`, `Invoke-Sqlcmd`, `az rest`, `Invoke-RestMethod`, pobieranie tokenów oraz zmieniające polecenia `pac` i `az` są blokowane przez hook. Nie próbuj obchodzić blokad. Jeśli blokada przeszkadza w uzasadnionej diagnozie, powiedz o tym pracownikowi.
 
 ## Przebieg
 
@@ -61,6 +62,8 @@ Zbieraj dowody, nie domysły. Typowe źródła:
 - dane w Dataverse, których dotyczy problem,
 - listy i biblioteki SharePoint używane przez automat,
 - historia uruchomień pipeline'ów i notebooków w Fabric.
+
+Gdy flow liczy dane zapytaniem SQL do hurtowni Fabric (np. flow rozliczeń Billing), sprawdź dane wprost: `ppcall sql <serwer> <baza> "SELECT ..." --out <katalog zgłoszenia>/plik.json`. Zawężaj zapytanie (`WHERE`, `TOP`, konkretne kolumny) i czytaj wynik z pliku lokalnym skryptem. Plik zawiera dane osobowe: w rozmowie i notatkach pokazuj wartości zamaskowane. `ppcall` łączy się kontem Azure CLI z konfiguracji dyżuru (e2vitservice), nie kontem dyżurnego, więc brak dostępu zgłoś jako brak uprawnień tego konta.
 
 Przy pytaniach o skalę i historię („od kiedy”, „ilu klientów”) nie odczytuj przebiegów pojedynczo. Pobierz je raz przez `ppcall runs` albo `ppcall get --all` do pliku w katalogu zgłoszenia i analizuj plik lokalnym skryptem. Skrypt nie łączy się z chmurą, tylko czyta pliki. Wejścia i wyjścia akcji (`--wejscia`, `--wyjscia`) to surowe dane: mogą zawierać dane osobowe i hasła. Pobieraj tylko akcje potrzebne do diagnozy, a w rozmowie i notatkach pokazuj wartości zamaskowane.
 
@@ -120,7 +123,7 @@ Gdy w kontekście pojawi się potwierdzenie `[pp-support] Pracownik zaakceptowa�
 
 ### 7. Zamknięcie
 
-Zapisz `zgloszenia/<ID>/raport.md`: objaw, przyczyna, co zrobiono (z odwołaniem do `wykonanie.jsonl`), wynik weryfikacji, co zostało do zrobienia. Dołącz propozycję wpisu „znany problem” dla autorów dokumentacji (objaw, przyczyna, jak potwierdzić, jak naprawić). Nie dopisuj go sam do ich dokumentacji. Przygotuj też treść komentarza do zgłoszenia w Jirze. Wyślij go dopiero po wyraźnym „tak” pracownika.
+Zapisz `zgloszenia/<ID>/raport.md`: objaw, przyczyna, co zrobiono (z odwołaniem do `wykonanie.jsonl`), wynik weryfikacji, co zostało do zrobienia. Dołącz propozycję wpisu „znany problem” dla autorów dokumentacji (objaw, przyczyna, jak potwierdzić, jak naprawić). Nie dopisuj go sam do ich dokumentacji. Usuń z katalogu zgłoszenia pliki `*_DANE_OSOBOWE*` z wynikami `ppcall sql`, gdy nie są już potrzebne do raportu. Przygotuj też treść komentarza do zgłoszenia w Jirze. Wyślij go dopiero po wyraźnym „tak” pracownika.
 
 ## Jak ograniczać pracę ręczną
 

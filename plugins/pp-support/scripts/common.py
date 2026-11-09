@@ -144,6 +144,8 @@ DEFAULT_CONFIG = {
     "sharepoint_host": "colpro.sharepoint.com",
     "sharepoint_site": "",
     "fabric_workspace_ids": [],
+    # Odczyt SQL (ppcall sql): wpisy <serwer>/<baza>, tylko endpointy SQL Fabric.
+    "fabric_sql_endpoints": ["ezpoaao4s3guzlluryza2wjh6y-pxnazkwsqg5etc62asdz35n22u.datawarehouse.fabric.microsoft.com/ekovoltis"],
     "docs_dir": "",
     "approval_ttl_min": 60,
     "incidents_dir": "",
@@ -231,6 +233,10 @@ def config_problems(cfg: dict) -> list[str]:
     host = (cfg.get("sharepoint_host") or "").lower()
     if host and not SHAREPOINT_HOST_RE.match(host):
         problems.append(f"sharepoint_host: niepoprawny host {host} (oczekiwany <nazwa>.sharepoint.com)")
+    for entry in _as_list(cfg.get("fabric_sql_endpoints")):
+        server, _, db = entry.partition("/")
+        if not FABRIC_SQL_HOST_RE.match(server.strip().lower()) or not SQL_DB_RE.match(db.strip()):
+            problems.append(f"fabric_sql_endpoints: oczekiwany wpis <nazwa>.datawarehouse.fabric.microsoft.com/<baza> (jest: {entry})")
     return problems
 
 
@@ -380,6 +386,170 @@ def resource_for_url(url: str) -> str | None:
     if DATAVERSE_HOST_RE.match(host) or SHAREPOINT_HOST_RE.match(host):
         return f"https://{host}"
     return None
+
+
+# ---------------------------------------------------------------- Fabric SQL (tylko odczyt, 1.4.0)
+
+# Token dla tego zasobu ppcall przekazuje sterownikowi ODBC we wlasnym procesie, wylacznie
+# do serwera z listy fabric_sql_endpoints, ktory musi byc hostem Fabric.
+SQL_RESOURCE = "https://database.windows.net/"
+FABRIC_SQL_HOST_RE = re.compile(r"^[a-z0-9-]+\.datawarehouse\.fabric\.microsoft\.com$")
+SQL_DB_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+SQL_DRIVER = "ODBC Driver 18 for SQL Server"
+SQL_MAX_ROWS = 5000
+SQL_MAX_ROWS_LIMIT = 50000
+SQL_TIMEOUT_S = 120
+SQL_TIMEOUT_LIMIT_S = 600
+SQL_MAX_QUERY_CHARS = 20000
+SQL_PERSONAL_TAG = "_DANE_OSOBOWE"
+# Slowa, ktorych nie moze byc nigdzie poza literalami i komentarzami: zmiany danych i schematu,
+# wywolania procedur, dostep do zrodel zewnetrznych, polecenia sterujace i transakcje.
+# T-SQL dopuszcza kilka polecen bez srednika, dlatego kazde z tych slow jest odrzucane w dowolnym miejscu.
+SQL_FORBIDDEN_WORDS = frozenset("""
+INSERT UPDATE DELETE MERGE DROP ALTER CREATE TRUNCATE EXEC EXECUTE INTO OUTPUT
+OPENROWSET OPENQUERY OPENDATASOURCE OPENXML WAITFOR BULK COPY RENAME
+GRANT REVOKE DENY BACKUP RESTORE DBCC KILL SHUTDOWN RECONFIGURE CHECKPOINT USE SETUSER REVERT
+DECLARE SET IF WHILE BEGIN COMMIT ROLLBACK SAVE TRAN TRANSACTION RETURN GOTO GO PRINT RAISERROR THROW
+OPEN CLOSE DEALLOCATE CURSOR RECEIVE SEND MOVE CONVERSATION ENABLE DISABLE
+READTEXT WRITETEXT UPDATETEXT ADD GET
+TABLOCK TABLOCKX XLOCK UPDLOCK HOLDLOCK PAGLOCK SERIALIZABLE REPEATABLEREAD
+""".split())
+SQL_SET_OPERATORS = frozenset({"UNION", "ALL", "EXCEPT", "INTERSECT"})
+# Liczby tak jak w lekserze T-SQL: 0x.. (cyfry szesnastkowe), 1.5e3, 1e (wykladnik moze byc pusty). Slowo po liczbie jest osobnym tokenem,
+# bo serwer tez je oddziela ("WHERE 1=1DELETE ..." to dwa polecenia).
+_SQL_TOKEN_RE = re.compile(r"0[xX][0-9A-Fa-f]*|\d+(?:\.\d*)?(?:[eE][+-]?\d*)?|\.\d+(?:[eE][+-]?\d*)?|[^\W\d][\w@#$]*|[@#][\w@#$]*|''|\S")
+
+
+def sql_endpoints(cfg: dict) -> list[tuple[str, str]]:
+    """Wpisy fabric_sql_endpoints w postaci <serwer>/<baza>."""
+    result = []
+    for entry in _as_list(cfg.get("fabric_sql_endpoints")):
+        server, _, db = entry.partition("/")
+        result.append((server.strip().lower(), db.strip()))
+    return result
+
+
+def sql_endpoint_problem(cfg: dict, server: str, db: str) -> str | None:
+    s, d = (server or "").strip().lower(), (db or "").strip()
+    if not FABRIC_SQL_HOST_RE.match(s):
+        return ("ppcall sql: serwer musi byc endpointem SQL Fabric (<nazwa>.datawarehouse.fabric.microsoft.com), "
+                f"bez protokolu i portu (jest: {server}).")
+    if not SQL_DB_RE.match(d):
+        return f"ppcall sql: niepoprawna nazwa bazy ({db})."
+    allowed = {(a, b.lower()) for a, b in sql_endpoints(cfg)}
+    if (s, d.lower()) not in allowed:
+        return (f"ppcall sql: endpoint {s} / {d} nie jest na liscie fabric_sql_endpoints w ustawieniach pluginu. "
+                "Liste zmienia czlowiek w ustawieniach.")
+    return None
+
+
+def _strip_sql(query: str) -> tuple[str | None, str | None]:
+    """Zapytanie bez komentarzy (takze zagniezdzonych) i z literalami tekstowymi zastapionymi ''.
+    Nazwy w [] i "" zostaja jako slowa, zeby nie ukrywaly slow kluczowych. Zwraca (tekst, problem)."""
+    out, i, n = [], 0, len(query)
+    while i < n:
+        ch, two = query[i], query[i:i + 2]
+        if two == "--":
+            ends = [j for j in (query.find("\n", i), query.find("\r", i)) if j >= 0]
+            i = min(ends) if ends else n
+            out.append(" ")
+        elif two == "/*":
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if query[i:i + 2] == "/*":
+                    depth, i = depth + 1, i + 2
+                elif query[i:i + 2] == "*/":
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            if depth:
+                return None, "niezamkniety komentarz /* */"
+            out.append(" ")
+        elif ch == "'":
+            i += 1
+            while True:
+                j = query.find("'", i)
+                if j < 0:
+                    return None, "niezamkniety literal tekstowy"
+                if query[j + 1:j + 2] == "'":
+                    i = j + 2
+                    continue
+                i = j + 1
+                break
+            out.append(" '' ")
+        elif ch in "[\"":
+            close = "]" if ch == "[" else '"'
+            buf, i = [], i + 1
+            while True:
+                if i >= n:
+                    return None, "niezamknieta nazwa w [] albo \"\""
+                if query[i] == close:
+                    if query[i + 1:i + 2] == close:
+                        buf.append(close)
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                buf.append(query[i])
+                i += 1
+            out.append(" " + "".join(buf) + " ")
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out), None
+
+
+def sql_query_problem(query: str) -> str | None:
+    """Jedno polecenie SELECT albo WITH ... SELECT. Sprawdzaja hook i ppcall przed wyslaniem do serwera."""
+    q = query or ""
+    if not q.strip():
+        return "ppcall sql: puste zapytanie."
+    if len(q) > SQL_MAX_QUERY_CHARS:
+        return f"ppcall sql: zapytanie dluzsze niz {SQL_MAX_QUERY_CHARS} znakow."
+    if any(unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") and c not in "\t\r\n" for c in q):
+        return "ppcall sql: zapytanie zawiera znaki sterujace albo niewidoczne."
+    stripped, problem = _strip_sql(q)
+    if problem:
+        return f"ppcall sql: {problem}."
+    for ch, why in ((";", "srednik (dozwolone jest jedno polecenie bez srednika)"),
+                    ("{", "nawias klamrowy (sekwencje ODBC {call ...})"), ("}", "nawias klamrowy")):
+        if ch in stripped:
+            return f"ppcall sql: niedozwolony {why}."
+    tokens = [t.upper() for t in _SQL_TOKEN_RE.findall(stripped)]
+    if not tokens or tokens[0] not in ("SELECT", "WITH"):
+        return "ppcall sql: zapytanie musi zaczynac sie od SELECT albo WITH (tylko odczyt)."
+    bad = sorted({t for t in tokens if t in SQL_FORBIDDEN_WORDS})
+    if bad:
+        return ("ppcall sql: tylko odczyt, niedozwolone slowa: " + ", ".join(bad) +
+                ". Kolumne o takiej nazwie odczytaj przez SELECT * albo widok.")
+    for a, b in zip(tokens, tokens[1:]):
+        if a == "NEXT" and b == "VALUE":
+            return "ppcall sql: NEXT VALUE FOR zmienia sekwencje."
+    depth, main_selects, prev = 0, 0, ""
+    for t in tokens:
+        if t == "(":
+            depth += 1
+        elif t == ")":
+            depth -= 1
+            if depth < 0:
+                return "ppcall sql: niesparowane nawiasy."
+        elif t == "SELECT" and depth == 0 and prev not in SQL_SET_OPERATORS:
+            main_selects += 1
+        prev = t
+    if depth:
+        return "ppcall sql: niesparowane nawiasy."
+    if main_selects != 1:
+        return ("ppcall sql: dozwolone jest jedno polecenie SELECT (zapytania laczy UNION, EXCEPT, INTERSECT); "
+                f"znaleziono {main_selects}.")
+    return None
+
+
+def sql_out_path(path: str) -> str:
+    """Nazwa pliku wyniku ppcall sql zawsze ma znacznik _DANE_OSOBOWE."""
+    p = Path(path)
+    if SQL_PERSONAL_TAG.lower() in p.name.lower():
+        return path
+    return str(p.with_name(p.stem + SQL_PERSONAL_TAG + p.suffix))
 
 
 # ---------------------------------------------------------------- plan naprawy
