@@ -1026,13 +1026,14 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
         sql_hits = sql_source_hits(defines(name, target), sql_sources)
         # wynik konektora to dane z czasu dzialania (znane ograniczenie): stale sprawdzane w akcjach wbudowanych
         builtin = str(action_type(target) or "").lower() in FLOW_SAFE_TYPES
-        bad = sql_insert_problem(ch.get("ma_byc")) if sql_hits and builtin else None
-        if sql_hits and builtin and not bad:
+        bad = None
+        if sql_hits and builtin and not source_change_exempt(target, keys_l):
+            # cala akcja po zmianie, z wyjatkami a i b (np. wartosc zmiennej '@{odwolanie}',)
             try:
-                if structured_output(get_at(changed, ch["sciezka"][:i])):
-                    bad = "nowa wartosc to tablica albo obiekt (do tekstu trafia JSON z [ ] i \")"
+                bad = source_value_problem(get_at(changed, ch["sciezka"][:i])) or \
+                    source_closure_problem(changed, name)
             except KeyError:
-                pass
+                bad = sql_insert_problem(ch.get("ma_byc"))
         if bad:
             errs.append(f"{flow_patch_label(ch['sciezka'])}: zmienia dane wstawiane do zapytania SQL "
                         f"({', '.join(sql_hits)}): {bad}")
@@ -1238,8 +1239,12 @@ def structured_output(action: dict) -> bool:
         return isinstance(inputs, (list, dict))
     values = [_ci(inputs, "value")]
     variables = _ci(inputs, "variables")
-    values += [_ci(v, "value") for v in variables if isinstance(v, dict)] if isinstance(variables, list) else []
-    return any(isinstance(v, (list, dict)) for v in values)
+    variables = variables if isinstance(variables, list) else []
+    values += [_ci(v, "value") for v in variables if isinstance(v, dict)]
+    # zmienna typu array/object jest tablica albo obiektem takze bez value (AppendToArrayVariable ja wypelnia)
+    if any(isinstance(v, dict) and str(_ci(v, "type") or "").lower() in ("array", "object") for v in variables):
+        return True
+    return t == "appendtoarrayvariable" or any(isinstance(v, (list, dict)) for v in values)
 
 
 def sql_insert_problem(value) -> str | None:
@@ -1250,6 +1255,9 @@ def sql_insert_problem(value) -> str | None:
         lits, safe = _wdl_literals(expr, SQL_EXPR_REF_FUNCS | {"triggerbody", "triggeroutputs"})
         if not safe:
             return "nowe wyrazenie uzywa funkcji spoza listy funkcji na danych (moglaby zbudowac tekst polecenia)"
+        if re.search(r"\b(concat|replace|formatString|join)\s*\(", expr, re.I):
+            # w zrodle wstawki (poza warunkami) zadne skladanie tekstu (decyzja z 2026-11-09)
+            return "wyrazenie sklada tekst (concat, replace, formatString, join); poza warunkiem jest niedozwolone"
         # literaly w wyrazeniach tylko z cyfr, spacji, przecinkow i kropek: z liter if/concat zlozylyby polecenie
         if any(not re.fullmatch(r"[0-9 ,.]*", v) for v, _ in lits):
             return "nowe wyrazenie zawiera literal tekstowy, z ktorego daloby sie zlozyc polecenie SQL"
@@ -1293,6 +1301,53 @@ def _value_parts(action: dict) -> dict:
     return {k: v for k, v in _own_body(action).items() if str(k).lower() in ("inputs", "foreach", "expression")}
 
 
+# Wyjatki w zrodlach wstawek (decyzja Michala Kaszty z 2026-11-09, ITS-418):
+# a) warunek `where` akcji Query i `expression` If/Switch/Until decyduja o filtrze albo galezi, nie o tresci;
+# b) w SetVariable i Append...Variable stala dokladnie '@{<jedno odwolanie do pola>}' z opcjonalnym przecinkiem
+#    (wzorzec listy '<PPE>', w ITS-418); apostrof w danych pola to znane ograniczenie.
+QUOTED_REF_VALUE_RE = re.compile(r"^'@\{\s*(items|item|variables|outputs|body)\s*\(\s*('[A-Za-z0-9_ .-]*')?\s*\)"
+                                 r"(\??\['[A-Za-z0-9_ .-]*'\])*\s*\}',?$", re.I)
+CONDITION_TYPES = {"if", "switch", "until"}
+VARIABLE_SET_TYPES = {"setvariable", "appendtostringvariable", "appendtoarrayvariable"}
+
+
+def _without_conditions(action: dict) -> dict:
+    """Wartosci akcji bez warunkow (where w Query, expression w If/Switch/Until) i bez wartosci zmiennej
+    w postaci '@{odwolanie}' (wyjatki a i b)."""
+    t = str(action_type(action) or "").lower()
+    parts = _value_parts(action)
+    if t in CONDITION_TYPES:
+        parts = {k: v for k, v in parts.items() if str(k).lower() != "expression"}
+    inputs_key = next((k for k in parts if str(k).lower() == "inputs"), None)
+    inputs = parts.get(inputs_key) if inputs_key else None
+    if isinstance(inputs, dict):
+        drop = set()
+        if t == "query":
+            drop = {k for k in inputs if str(k).lower() == "where"}
+        if t in VARIABLE_SET_TYPES:
+            drop = {k for k in inputs if str(k).lower() == "value" and isinstance(inputs[k], str)
+                    and QUOTED_REF_VALUE_RE.fullmatch(inputs[k])}
+        if drop:
+            parts = {**parts, inputs_key: {k: v for k, v in inputs.items() if k not in drop}}
+    return parts
+
+
+def source_value_problem(action: dict) -> str | None:
+    """Akcja wbudowana bedaca zrodlem wstawki do zapytania SQL: stale i wyrazenia (z wyjatkami a i b)."""
+    bad = sql_insert_problem(_without_conditions(action))
+    if bad:
+        return bad
+    return "wartosc to tablica albo obiekt (JSON z [ ] i \")" if structured_output(action) else None
+
+
+def source_change_exempt(action: dict, keys: list) -> bool:
+    """Zmiana flow-patch w zrodle wstawki objeta wyjatkiem a albo b (keys: sciezka za nazwa akcji, malymi literami)."""
+    t = str(action_type(action) or "").lower()
+    if t == "query" and keys[:2] == ["inputs", "where"]:
+        return True
+    return t in CONDITION_TYPES and keys[:1] == ["expression"]
+
+
 def sql_new_expr_sources_problem(definition: dict, sql_action: str, expr: str) -> str | None:
     """Nowe wyrazenie w zapytaniu: stale w akcjach wbudowanych, z ktorych bierze wartosc, musza przejsc
     sql_insert_problem (inaczej krok podlaczylby do zapytania stala z poleceniem SQL)."""
@@ -1301,13 +1356,31 @@ def sql_new_expr_sources_problem(definition: dict, sql_action: str, expr: str) -
     except KeyError:
         return None
     where = actions[sql_action][0] if sql_action in actions else ()
-    refs = _dependency_closure(actions, [(canon(expr), where)])
+    return _sources_problem(actions, [(canon(expr), where)])
+
+
+def source_closure_problem(definition: dict, source_action: str) -> str | None:
+    """Zmienione zrodlo wstawki: akcje wbudowane, z ktorych bierze wartosc (takze nowe odwolania), musza przejsc
+    source_value_problem (inaczej '@{variables('cmd')}', podlaczyloby stala z poleceniem)."""
+    try:
+        actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
+    except KeyError:
+        return None
+    if source_action not in actions:
+        return None
+    where, action = actions[source_action]
+    return _sources_problem(actions, [(canon(_own_body(action)), where)], skip=source_action)
+
+
+def _sources_problem(actions: dict, seeds: list, skip: str | None = None) -> str | None:
+    refs = _dependency_closure(actions, seeds)
     if ANY_REF in refs:
         return "ma nazwe wyliczana"
     for n, (_, a) in actions.items():
+        if n == skip:
+            continue  # wlasna tresc zrodla sprawdza wywolujacy (z wyjatkiem dla zmienianej wartosci)
         if str(action_type(a) or "").lower() in FLOW_SAFE_TYPES and defines(n, a) & refs:
-            bad = sql_insert_problem(_value_parts(a)) or \
-                ("wartosc to tablica albo obiekt (JSON z [ ] i \")" if structured_output(a) else None)
+            bad = source_value_problem(a)
             if bad:
                 return f"ustawia akcja {n}: {bad}"
     return None
@@ -2346,8 +2419,7 @@ def flow_definition_live_problems(step: dict, workflow: dict, new: dict,
             c["sql"] = sql_source_hits(c["definiuje"], sql_sources)
             if c["sql"] and c["zmiana"] != "usunieta" and c["akcja"] in new_actions:
                 new_action = new_actions[c["akcja"]][1]
-                bad = sql_insert_problem(_value_parts(new_action)) or \
-                    ("wartosc to tablica albo obiekt (JSON z [ ] i \")" if structured_output(new_action) else None)
+                bad = source_value_problem(new_action) or source_closure_problem(new, c["akcja"])
                 if bad:
                     errs.append(f"{c['akcja']}: zmienia dane wstawiane do zapytania SQL ({', '.join(c['sql'])}): {bad}")
             hit = sensitive_hit(c["definiuje"], sensitive)
