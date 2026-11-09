@@ -2931,6 +2931,139 @@ with contextlib.redirect_stdout(buf):
                           "srodowisko": DV, "workflowid": WF3})
 expect("plan-check oznacza zmiane zapytania SQL", "ZAPYTANIE SQL: stare tylko odczyt: tak, nowe tylko odczyt: tak" in buf.getvalue(), True)
 
+print("39. 1.4.2: runAfter akcji, od ktorych zalezy adres")
+DEF7 = {"properties": {"connectionReferences": {}, "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Init_url": {"type": "InitializeVariable", "runAfter": {},
+                 "inputs": {"variables": [{"name": "url", "type": "string", "value": ""}]}},
+    "SetEvil": {"type": "SetVariable", "runAfter": {"Init_url": ["Succeeded"]},
+                "inputs": {"name": "url", "value": "https://evil.example.com"}},
+    "SetGood": {"type": "SetVariable", "runAfter": {"SetEvil": ["Succeeded"]},
+                "inputs": {"name": "url", "value": "https://api.example.com"}},
+    "Inny": {"type": "Compose", "runAfter": {"SetGood": ["Succeeded"]}, "inputs": "x"},
+    "H": {"type": "Http", "runAfter": {"Inny": ["Succeeded"]}, "inputs": {"method": "GET", "uri": "@variables('url')"}},
+}}}}
+A7 = ["properties", "definition", "actions"]
+REORDER = [{"sciezka": A7 + ["SetGood", "runAfter"], "bylo": {"SetEvil": ["Succeeded"]}, "ma_byc": {"Init_url": ["Succeeded"]}},
+           {"sciezka": A7 + ["SetEvil", "runAfter"], "bylo": {"Init_url": ["Succeeded"]}, "ma_byc": {"SetGood": ["Succeeded"]}},
+           {"sciezka": A7 + ["Inny", "runAfter"], "bylo": {"SetGood": ["Succeeded"]}, "ma_byc": {"SetEvil": ["Succeeded"]}}]
+expect("runAfter: zamiana kolejnosci SetGood/SetEvil w flow-patch odrzucona",
+       any("akcja ustawia" in e for e in patch6(REORDER, DEF7)), True)
+expect("runAfter: zmiana statusu runAfter akcji ustawiajacej adres odrzucona",
+       any("akcja ustawia" in e for e in patch6([{"sciezka": A7 + ["SetGood", "runAfter"], "bylo": {"SetEvil": ["Succeeded"]},
+                                                 "ma_byc": {"SetEvil": ["Failed"]}}], DEF7)), True)
+expect("runAfter: akcja niezalezna od adresu nadal do zmiany",
+       patch6([{"sciezka": A7 + ["Inny", "runAfter"], "bylo": {"SetGood": ["Succeeded"]},
+                "ma_byc": {"SetGood": ["Succeeded", "Failed"]}}], DEF7), [])
+d7 = copy.deepcopy(DEF7)
+for ch in REORDER:
+    set_path = ch["sciezka"][len(A7):]
+    d7["properties"]["definition"]["actions"][set_path[0]]["runAfter"] = ch["ma_byc"]
+expect("runAfter: przestawienie w flow-definition odrzucone", any("akcja ustawia" in e for e in defn6(d7, DEF7)), True)
+expect("runAfter: ITS-418 plan A nadal przechodzi", defn6(planA(copy.deepcopy(DEF6))), [])
+DEF8 = {"properties": {"connectionReferences": {}, "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Init": {"type": "InitializeVariable", "runAfter": {},
+             "inputs": {"variables": [{"name": "url", "type": "string", "value": "https://a"}]}},
+    "X": {"type": "Compose", "runAfter": {"Init": ["Succeeded"]}, "inputs": "x"},
+    "Http": {"type": "Http", "runAfter": {"X": ["Succeeded"]}, "inputs": {"method": "POST", "uri": "@variables('url')"}},
+    "Sc": {"type": "Scope", "runAfter": {"Http": ["Succeeded"]}, "actions": {
+        "SetB": {"type": "SetVariable", "runAfter": {}, "inputs": {"name": "url", "value": "https://b"}}}},
+}}}}
+DEF9 = {"properties": {"connectionReferences": {}, "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Init": {"type": "InitializeVariable", "runAfter": {},
+             "inputs": {"variables": [{"name": "url", "type": "string", "value": "https://a"}]}},
+    "InitD": {"type": "InitializeVariable", "runAfter": {"Init": ["Succeeded"]},
+              "inputs": {"variables": [{"name": "dane", "type": "string", "value": "tajne"}]}},
+    "Http": {"type": "Http", "runAfter": {"InitD": ["Succeeded"]},
+             "inputs": {"method": "POST", "uri": "@variables('url')", "body": "@variables('dane')"}},
+    "SetB": {"type": "SetVariable", "runAfter": {"InitD": ["Succeeded"]}, "inputs": {"name": "url", "value": "https://b"}},
+    "Http2": {"type": "Http", "runAfter": {"SetB": ["Succeeded"]}, "inputs": {"method": "GET", "uri": "@variables('url')"}},
+    "Inny": {"type": "Compose", "runAfter": {"InitD": ["Succeeded"]}, "inputs": "x"},
+}}}}
+expect("kolejnosc: przepiecie runAfter akcji wysylajacej za inna akcje ustawiajaca adres odrzucone (A)",
+       any("kolejnosci wykonania" in e for e in patch6([{"sciezka": A7 + ["Http", "runAfter"], "bylo": {"InitD": ["Succeeded"]},
+                                                        "ma_byc": {"SetB": ["Succeeded"]}}], DEF9)), True)
+d9 = copy.deepcopy(DEF9)
+d9["properties"]["definition"]["actions"]["Http"]["runAfter"] = {"SetB": ["Succeeded"]}
+expect("kolejnosc: to samo w flow-definition odrzucone", any("kolejnosci wykonania" in e for e in defn6(d9, DEF9)), True)
+DEF10 = copy.deepcopy(DEF9)
+DEF10["properties"]["definition"]["actions"]["Http"]["runAfter"] = {"Inny": ["Succeeded"]}
+expect("kolejnosc: akcja posredniczaca przy rownoleglej galezi (C) odrzucona",
+       any("kolejnosci wykonania" in e for e in patch6([{"sciezka": A7 + ["Inny", "runAfter"], "bylo": {"InitD": ["Succeeded"]},
+                                                        "ma_byc": {"SetB": ["Succeeded"]}}], DEF10)), True)
+DEF10b = copy.deepcopy(DEF10)
+DEF10b["properties"]["definition"]["actions"]["Koniec"] = {"type": "Compose", "runAfter": {"Http": ["Succeeded"]}, "inputs": "k"}
+expect("kolejnosc: zmiana runAfter akcji bez wplywu na kolejnosc przechodzi",
+       patch6([{"sciezka": A7 + ["Koniec", "runAfter"], "bylo": {"Http": ["Succeeded"]},
+                "ma_byc": {"Http": ["Succeeded", "Failed"]}}], DEF10b), [])
+expect("wyscig: zmiana statusu runAfter akcji przed akcja wysylajaca w wyscigu odrzucona",
+       any("rownolegle" in e for e in patch6([{"sciezka": A7 + ["Inny", "runAfter"], "bylo": {"InitD": ["Succeeded"]},
+                                               "ma_byc": {"InitD": ["Succeeded", "Failed"]}}], DEF10)), True)
+expect("kolejnosc: rownolegle galezie bez zmian przechodza",
+       patch6([{"sciezka": A7 + ["Inny", "inputs"], "bylo": "x", "ma_byc": "y"}], DEF9), [])
+DEF11 = {"properties": {"connectionReferences": {}, "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Init": {"type": "InitializeVariable", "runAfter": {},
+             "inputs": {"variables": [{"name": "url", "type": "string", "value": "https://a"}]}},
+    "Cpos": {"type": "Compose", "runAfter": {"Init": ["Succeeded"]}, "inputs": "x"},
+    "SetGood": {"type": "SetVariable", "runAfter": {"Cpos": ["Succeeded"]}, "inputs": {"name": "url", "value": "https://good"}},
+    "SetEvil": {"type": "SetVariable", "runAfter": {"Init": ["Succeeded"]}, "inputs": {"name": "url", "value": "https://evil"}},
+    "Http": {"type": "Http", "runAfter": {"SetGood": ["Succeeded"], "SetEvil": ["Succeeded"]},
+             "inputs": {"method": "GET", "uri": "@variables('url')"}},
+}}}}
+d11 = copy.deepcopy(DEF11)
+d11["properties"]["definition"]["actions"]["W"] = {"type": "Wait", "runAfter": {"Init": ["Succeeded"]},
+                                                  "inputs": {"interval": {"count": 1, "unit": "Minute"}}}
+d11["properties"]["definition"]["actions"]["Cpos"]["runAfter"] = {"W": ["Succeeded"]}
+expect("wyscig: opoznienie galezi z akcja ustawiajaca (Wait) odrzucone",
+       any("rownolegle" in e for e in defn6(d11, DEF11)), True)
+expect("wyscig: zmiana runAfter akcji w galezi wyscigu (flow-patch) odrzucona",
+       any("rownolegle" in e for e in patch6([{"sciezka": A7 + ["Cpos", "runAfter"], "bylo": {"Init": ["Succeeded"]},
+                                               "ma_byc": {"Init": ["Succeeded", "Failed"]}}], DEF11)), True)
+DEF12 = {"properties": {"connectionReferences": {}, "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Init": {"type": "InitializeVariable", "runAfter": {},
+             "inputs": {"variables": [{"name": "url", "type": "string", "value": "https://a"}]}},
+    "SetEvil": {"type": "SetVariable", "runAfter": {"Init": ["Succeeded"]}, "inputs": {"name": "url", "value": "https://evil"}},
+    "U": {"type": "Until", "runAfter": {"Init": ["Succeeded"]}, "expression": "@equals(1,1)", "limit": {"count": 1},
+          "actions": {"Http": {"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "@variables('url')"}}}},
+}}}}
+d12 = copy.deepcopy(DEF12)
+d12["properties"]["definition"]["actions"]["U"]["limit"] = {"count": 60}
+d12["properties"]["definition"]["actions"]["U"]["expression"] = "@equals(1,0)"
+expect("wyscig: wydluzenie petli Until z akcja wysylajaca odrzucone", any("rownolegle" in e for e in defn6(d12, DEF12)), True)
+DEF13 = {"properties": {"connectionReferences": {}, "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Init": {"type": "InitializeVariable", "runAfter": {},
+             "inputs": {"variables": [{"name": "url", "type": "string", "value": "https://a"}]}},
+    "SetEvil": {"type": "SetVariable", "runAfter": {"Init": ["Succeeded"]}, "inputs": {"name": "url", "value": "https://evil"}},
+    "W": {"type": "Wait", "runAfter": {"SetEvil": ["Succeeded"]}, "inputs": {"interval": {"count": 0, "unit": "Second"}}},
+    "SetGood": {"type": "SetVariable", "runAfter": {"W": ["Succeeded"]}, "inputs": {"name": "url", "value": "https://good"}},
+    "N": {"type": "Compose", "runAfter": {"SetGood": ["Succeeded"]}, "inputs": "n"},
+    "Comp": {"type": "Compose", "runAfter": {"N": ["Succeeded"]}, "inputs": "@variables('url')"},
+    "Http": {"type": "Http", "runAfter": {"Comp": ["Succeeded"], "SetGood": ["Succeeded"]},
+             "inputs": {"method": "GET", "uri": "@outputs('Comp')"}},
+}}}}
+expect("kolejnosc: posrednik czytajacy adres przestawiony przed akcje ustawiajaca odrzucony",
+       any("kolejnosci" in e or "rownolegle" in e for e in patch6(
+           [{"sciezka": A7 + ["N", "runAfter"], "bylo": {"SetGood": ["Succeeded"]}, "ma_byc": {"SetEvil": ["Succeeded"]}}],
+           DEF13)), True)
+DEF14 = {"properties": {"connectionReferences": {}, "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Init": {"type": "InitializeVariable", "runAfter": {},
+             "inputs": {"variables": [{"name": "url", "type": "string", "value": "https://a"}]}},
+    "SetEvil": {"type": "SetVariable", "runAfter": {"Init": ["Succeeded"]}, "inputs": {"name": "url", "value": "https://evil"}},
+    "Q": {"type": "Scope", "runAfter": {"Init": ["Succeeded"]}, "actions": {
+        "Wq": {"type": "Wait", "runAfter": {}, "inputs": {"interval": {"count": 0, "unit": "Second"}}}}},
+    "Y": {"type": "Scope", "runAfter": {"Q": ["Succeeded"]}, "actions": {
+        "Http": {"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "@variables('url')"}}}},
+}}}}
+d14 = copy.deepcopy(DEF14)
+d14["properties"]["definition"]["actions"]["Q"]["actions"]["Wq"]["inputs"]["interval"]["count"] = 60
+expect("wyscig: Wait w srodku zakresu poprzedzajacego akcje wysylajaca odrzucony",
+       any("rownolegle" in e for e in defn6(d14, DEF14)), True)
+expect("runAfter: Scope z akcja ustawiajaca adres jest wrazliwy", ("act", "sc") in C.sensitive_refs(DEF8), True)
+expect("runAfter: przestawienie Scope z akcja ustawiajaca adres odrzucone",
+       any("akcja ustawia" in e for e in patch6([{"sciezka": A7 + ["Sc", "runAfter"], "bylo": {"Http": ["Succeeded"]},
+                                                 "ma_byc": {"Init": ["Succeeded"]}},
+                                                {"sciezka": A7 + ["X", "runAfter"], "bylo": {"Init": ["Succeeded"]},
+                                                 "ma_byc": {"Sc": ["Succeeded"]}}], DEF8)), True)
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)
