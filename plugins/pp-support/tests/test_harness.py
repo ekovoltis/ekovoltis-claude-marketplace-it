@@ -2352,6 +2352,17 @@ class FakeCursor:
         if q == "SELECT @@OPTIONS":
             self.description, self.rows = [("",)], [(self.conn.options,)]
             return
+        if q == "BEGIN TRANSACTION":
+            if FAKE_TRAN["begin_fails"]:
+                raise Exception("BEGIN TRANSACTION is not supported")
+            self.conn.trancount = FAKE_TRAN["count"]
+            return
+        if q == "SELECT @@TRANCOUNT":
+            self.description, self.rows = [("",)], [(self.conn.trancount,)]
+            return
+        if q.startswith("IF @@TRANCOUNT > 0 ROLLBACK"):
+            self.conn.trancount = 0
+            return
         if self.conn.fail:
             raise Exception("[28000] Login failed for user '<token-identified principal>'. " + self.conn.fail)
         self.description = [("ppe",), ("data",), ("wartosc",)]
@@ -2368,6 +2379,7 @@ class FakeCursor:
 class FakeConn:
     def __init__(self, fail=""):
         self.log, self.fail, self.timeout, self.options = [], fail, None, FAKE_OPTIONS["v"]
+        self.trancount = 0
 
     def cursor(self):
         return FakeCursor(self)
@@ -2393,6 +2405,8 @@ class FakeOdbc:
 
 
 FAKE_OPTIONS = {"v": 2 | 32}
+FAKE_TRAN = {"count": 1, "begin_fails": False}
+ROLLBACK_TAIL = [("execute", "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"), ("rollback",), ("close",)]
 ODBC = FakeOdbc()
 P._odbc = lambda: ODBC
 P.get_token = lambda resource: (SQLTOKEN if resource == C.SQL_RESOURCE else "inny")
@@ -2419,9 +2433,10 @@ expect("sql: kolumny i wiersze w pliku", (res["kolumny"], res["liczba_wierszy"],
        (["ppe", "data", "wartosc"], 7, "1.250"))
 expect("sql: na ekranie podsumowanie, bez pelnego wyniku", ("Wierszy: 7" in text, text.count("590556731701300006")), (True, 3))
 c0 = ODBC.connects[-1]
-expect("sql: ReadOnly, bez autocommit, wycofanie i zamkniecie",
-       ("ApplicationIntent=ReadOnly" in c0["conn_str"], c0["autocommit"], c0["conn"].log[-2:]),
-       (True, False, [("rollback",), ("close",)]))
+expect("sql: Fabric: ReadOnly, jawna transakcja przed zapytaniem, zawsze ROLLBACK i zamkniecie",
+       ("ApplicationIntent=ReadOnly" in c0["conn_str"], c0["conn"].log[:3], c0["conn"].log[-3:]),
+       (True, [("execute", "BEGIN TRANSACTION"), ("execute", "SELECT @@TRANCOUNT"), ("execute", SQL_ITS426)],
+        ROLLBACK_TAIL))
 expect("sql: token tylko w atrybucie 1256", (SQLTOKEN in c0["conn_str"], SQLTOKEN.encode("utf-16-le") in c0["attrs"][1256]),
        (False, True))
 expect("sql: token nie w wyjsciu ani w pliku", (SQLTOKEN in text, SQLTOKEN in res_file.read_text(encoding="utf-8")),
@@ -2522,16 +2537,27 @@ for label, args in [("bez --out", [SQLSRV, "ekovoltis", "SELECT 1"]),
 code, _ = sql_run(SQLSRV, "ekovoltis", "SELECT 1", "--out", "zgloszenia/ITS-426/x.json", "--max-wierszy", "999999")
 expect("sql: --max-wierszy ponad limit", code != 0, True)
 
+for label, count, fails in [("@@TRANCOUNT 0", 0, False), ("@@TRANCOUNT 2", 2, False), ("blad BEGIN TRANSACTION", 1, True)]:
+    FAKE_TRAN.update(count=count, begin_fails=fails)
+    code, text = sql_run(SQLSRV, "ekovoltis", "SELECT 1 AS a", "--out", "zgloszenia/ITS-426/x.json")
+    expect(f"sql: Fabric bez transakcji ({label}): zapytanie nie jest wykonane, wycofanie i zamkniecie",
+           (code != 0, ("execute", "SELECT 1 AS a") in ODBC.connects[-1]["conn"].log,
+            ODBC.connects[-1]["conn"].log[-3:] == ROLLBACK_TAIL, SQLTOKEN in text), (True, False, True, False))
+FAKE_TRAN.update(count=1, begin_fails=False)
+real_explicit = P._explicit_transaction
+P._explicit_transaction = lambda server: False  # inny serwer: tryb niejawny jak w 1.4.0
 FAKE_OPTIONS["v"] = 32
 code, text = sql_run(SQLSRV, "ekovoltis", "SELECT 1 AS a", "--out", "zgloszenia/ITS-426/x.json")
-expect("sql: bez transakcji niejawnych zapytanie nie jest wykonane",
-       (code != 0, ("execute", "SELECT 1 AS a") in ODBC.connects[-1]["conn"].log), (True, False))
+P._explicit_transaction = real_explicit
+expect("sql: inny serwer bez transakcji niejawnych: zapytanie nie jest wykonane",
+       (code != 0, ("execute", "SELECT 1 AS a") in ODBC.connects[-1]["conn"].log, ODBC.connects[-1]["autocommit"]),
+       (True, False, False))
 FAKE_OPTIONS["v"] = 2
 ODBC.fail = "Bearer " + SQLTOKEN
 code, text = sql_run(SQLSRV, "ekovoltis", "SELECT 1", "--out", "zgloszenia/ITS-426/blad.json")
 expect("sql: blad logowania: komunikat z kontem e2vitservice, bez tokenu",
        (code != 0, "e2vitservice" in text, SQLTOKEN in text), (True, True, False))
-expect("sql: po bledzie transakcja wycofana", ODBC.connects[-1]["conn"].log[-2:], [("rollback",), ("close",)])
+expect("sql: po bledzie zapytania transakcja wycofana", ODBC.connects[-1]["conn"].log[-3:], ROLLBACK_TAIL)
 ODBC.fail = ""
 P._odbc = lambda: FakeOdbc(drivers=["SQL Server"])
 code, text = sql_run(SQLSRV, "ekovoltis", "SELECT 1", "--out", "zgloszenia/ITS-426/x.json")
@@ -3063,6 +3089,76 @@ expect("runAfter: przestawienie Scope z akcja ustawiajaca adres odrzucone",
                                                  "ma_byc": {"Init": ["Succeeded"]}},
                                                 {"sciezka": A7 + ["X", "runAfter"], "bylo": {"Init": ["Succeeded"]},
                                                  "ma_byc": {"Sc": ["Succeeded"]}}], DEF8)), True)
+
+print("40. 1.4.3: wyjatki w zrodlach wstawek SQL (warunki, '@{pole}',)")
+
+
+def def15(append_value, where="@and(equals(item()?['a'], 'JW'), contains(split(string(coalesce(item()?['b'], '')), ','), '1'))"):
+    d = copy.deepcopy(DEF6)
+    a = d["properties"]["definition"]["actions"]
+    a["Init_JWX"] = {"type": "InitializeVariable", "runAfter": {},
+                     "inputs": {"variables": [{"name": "JWX", "type": "string", "value": ""}]}}
+    inner = a["Apply_to_each"]["actions"]
+    inner["Filter_X"] = {"type": "Query", "runAfter": {"List_rows_3": ["Succeeded"]},
+                         "inputs": {"from": "@body('List_rows_3')?['value']", "where": where}}
+    inner["Each_X"] = {"type": "Foreach", "runAfter": {"Filter_X": ["Succeeded"]}, "foreach": "@body('Filter_X')",
+                       "actions": {"Append_X": {"type": "AppendToStringVariable", "runAfter": {},
+                                                "inputs": {"name": "JWX", "value": append_value}}}}
+    inner["Append_JW"]["runAfter"] = {"Each_X": ["Succeeded"]}
+    return d
+
+
+QB_OLD = "SELECT a FROM t WHERE b IN (@{variables('JW')})"
+QB_NEW = "SELECT a FROM t WHERE b IN (@{variables('JW')}) OR c IN (@{variables('JWX')}'')"
+
+
+def plan_b_like(d):
+    d["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["PobierzdanePPE"]["inputs"]["parameters"]["query/query"] = QB_OLD
+    return patch6([{"sciezka": SQLQ, "bylo": QB_OLD, "ma_byc": QB_NEW}], d)
+
+
+expect("zrodla SQL: wzorzec ITS-418 (where z funkcjami, '@{pole}',) przechodzi",
+       plan_b_like(def15("'@{items('Each_X')?['eko_value_text']}',")), [])
+for label, value in [("'@{...}'; DELETE", "'@{items('Each_X')?['v']}'; DELETE FROM t"),
+                     ("'x' + '@{...}'", "'x' + '@{items('Each_X')?['v']}'"),
+                     ("dwa odwolania", "'@{items('Each_X')?['v']}','@{items('Each_X')?['w']}'"),
+                     ("concat w wartosci", "'@{concat(items('Each_X')?['v'], 'x')}',"),
+                     ("replace w wartosci", "@{replace(items('Each_X')?['v'], 'a', 'b')}"),
+                     ("formatString", "@{formatString('{0}', items('Each_X')?['v'])}"),
+                     ("apostrof w innej stalej", "a'b"),
+                     ("koncowa nowa linia", "'@{items('Each_X')?['v']}',\n")]:
+    expect(f"zrodla SQL: nadal odrzucone: {label}", any("do zapytania" in e for e in plan_b_like(def15(value))), True)
+expect("zrodla SQL: concat poza warunkiem (Compose zrodlem) odrzucony",
+       any("zapytania SQL" in e for e in patch6([{"sciezka": CMPV, "bylo": "1", "ma_byc": "@{concat('1', '2')}"}], DQ)), True)
+WHERE15 = LOOP + ["Filter_X", "inputs", "where"]
+d15 = def15("'@{items('Each_X')?['eko_value_text']}',")
+d15["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["PobierzdanePPE"]["inputs"]["parameters"]["query/query"] = QB_NEW
+expect("zrodla SQL: zmiana warunku where w zrodle przechodzi (wyjatek a)",
+       [e for e in patch6([{"sciezka": WHERE15, "bylo": d15["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["Filter_X"]["inputs"]["where"],
+                            "ma_byc": "@equals(item()?['a'], 'FW')"}], d15) if "zapytania SQL" in e], [])
+APP15 = LOOP + ["Each_X", "actions", "Append_X", "inputs", "value"]
+expect("zrodla SQL: zmiana wartosci zrodla na '@{pole}', przechodzi (wyjatek b)",
+       [e for e in patch6([{"sciezka": APP15, "bylo": "'@{items('Each_X')?['eko_value_text']}',",
+                            "ma_byc": "'@{items('Each_X')?['eko_value']}',"}], d15) if "zapytania SQL" in e], [])
+d15b = copy.deepcopy(d15)
+d15b["properties"]["definition"]["actions"]["Init_cmd"] = {"type": "InitializeVariable", "runAfter": {},
+                                                          "inputs": {"variables": [{"name": "cmd", "type": "string",
+                                                                                    "value": "x') DELETE FROM t --"}]}}
+expect("zrodla SQL: zrodlo przepiete na istniejaca zmienna ze stala z poleceniem odrzucone",
+       any("zapytania SQL" in e for e in patch6([{"sciezka": APP15, "bylo": "'@{items('Each_X')?['eko_value_text']}',",
+                                                  "ma_byc": "'@{variables('cmd')}',"}], d15b)), True)
+d15c = def15("'@{items('Each_X')?['v']}'")
+d15c["properties"]["definition"]["actions"]["Init_ARR"] = {"type": "InitializeVariable", "runAfter": {},
+                                                          "inputs": {"variables": [{"name": "ARR", "type": "array"}]}}
+d15c["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["Each_X"]["actions"]["Append_X"] = {
+    "type": "AppendToArrayVariable", "runAfter": {}, "inputs": {"name": "ARR", "value": "'@{items('Each_X')?['v']}'"}}
+d15c["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["PobierzdanePPE"]["inputs"]["parameters"]["query/query"] = QB_OLD
+expect("zrodla SQL: zmienna tablicowa (JSON z [ ]) wstawiona do zapytania odrzucona",
+       any("do zapytania" in e for e in patch6([{"sciezka": SQLQ, "bylo": QB_OLD,
+                                                 "ma_byc": QB_OLD + " OR c IN (@{variables('ARR')})"}], d15c)), True)
+expect("zrodla SQL: zmiana wartosci zrodla na '@{pole}'; DELETE odrzucona",
+       any("zapytania SQL" in e for e in patch6([{"sciezka": APP15, "bylo": "'@{items('Each_X')?['eko_value_text']}',",
+                                                  "ma_byc": "'@{items('Each_X')?['v']}'; DELETE FROM t"}], d15)), True)
 
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")

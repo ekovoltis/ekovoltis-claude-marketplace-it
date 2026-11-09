@@ -1431,6 +1431,11 @@ def _sql_error(e: Exception, secrets: list[str]) -> str:
     return text
 
 
+def _explicit_transaction(server: str) -> bool:
+    """Hurtownia Fabric: jawna transakcja zamiast trybu niejawnego."""
+    return bool(C.FABRIC_SQL_HOST_RE.match(server.strip().lower()))
+
+
 def run_sql(server: str, db: str, query: str, max_rows: int, timeout_s: int) -> tuple[list[str], list[list], bool]:
     """Wykonuje sprawdzone zapytanie w transakcji wycofywanej po odczycie. Zwraca (kolumny, wiersze, obcieto)."""
     problem = C.sql_endpoint_problem(C.load_config(), server, db) or C.sql_query_problem(query, db)
@@ -1445,19 +1450,31 @@ def run_sql(server: str, db: str, query: str, max_rows: int, timeout_s: int) -> 
     conn_str = (f"Driver={{{C.SQL_DRIVER}}};Server=tcp:{server.strip().lower()},1433;Database={db.strip()};"
                 "Encrypt=yes;TrustServerCertificate=no;ApplicationIntent=ReadOnly;Connection Timeout=30")
     conn = None
+    # Hurtownia Fabric nie zglasza trybu IMPLICIT_TRANSACTIONS (ITS-418), wiec tam transakcja jest jawna:
+    # BEGIN TRANSACTION, @@TRANCOUNT = 1, zapytanie, zawsze ROLLBACK (decyzja Michala Kaszty z 2026-11-09).
+    explicit = _explicit_transaction(server)
+    cur = None
     try:
         # SQL_COPT_SS_ACCESS_TOKEN (1256): token w strukturze ODBC, nie w tekscie polaczenia.
         conn = odbc.connect(conn_str, attrs_before={1256: struct.pack("<I", len(raw)) + raw},
-                            autocommit=False, timeout=30)
+                            autocommit=explicit, timeout=30)
         conn.timeout = timeout_s
         cur = conn.cursor()
-        # Bez autocommit sterownik wlacza IMPLICIT_TRANSACTIONS (bit 2 w @@OPTIONS): odczyt jest w transakcji,
-        # ktora finally wycofuje. Gdy serwer tego trybu nie ma, odczyt nie jest wykonywany.
-        cur.execute("SELECT @@OPTIONS")
-        options = cur.fetchone()
-        if not options or not int(options[0]) & 2:
-            raise RuntimeError("Fabric SQL: sesja bez trybu transakcji niejawnych (IMPLICIT_TRANSACTIONS), "
-                               "wycofanie odczytu nie jest gwarantowane. Zapytanie nie zostalo wykonane.")
+        if explicit:
+            cur.execute("BEGIN TRANSACTION")
+            cur.execute("SELECT @@TRANCOUNT")
+            count = cur.fetchone()
+            if not count or int(count[0]) != 1:
+                raise RuntimeError("Fabric SQL: nie udalo sie otworzyc transakcji (@@TRANCOUNT rozny od 1), "
+                                   "wycofanie odczytu nie jest gwarantowane. Zapytanie nie zostalo wykonane.")
+        else:
+            # Bez autocommit sterownik wlacza IMPLICIT_TRANSACTIONS (bit 2 w @@OPTIONS): odczyt jest w transakcji,
+            # ktora finally wycofuje. Gdy serwer tego trybu nie ma, odczyt nie jest wykonywany.
+            cur.execute("SELECT @@OPTIONS")
+            options = cur.fetchone()
+            if not options or not int(options[0]) & 2:
+                raise RuntimeError("Fabric SQL: sesja bez trybu transakcji niejawnych (IMPLICIT_TRANSACTIONS), "
+                                   "wycofanie odczytu nie jest gwarantowane. Zapytanie nie zostalo wykonane.")
         cur.execute(query)
         if cur.description is None:
             raise RuntimeError("Zapytanie nie zwrocilo wyniku (oczekiwany SELECT).")
@@ -1472,6 +1489,19 @@ def run_sql(server: str, db: str, query: str, max_rows: int, timeout_s: int) -> 
     finally:
         del token, raw
         if conn is not None:
+            if explicit:
+                # kursor z nieodczytanymi wynikami (obciety wynik) blokowalby polecenie ROLLBACK na tym polaczeniu
+                if cur is not None:
+                    for close in (getattr(cur, "cancel", None), getattr(cur, "close", None)):
+                        try:
+                            if close:
+                                close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                try:
+                    conn.cursor().execute("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION")
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 conn.rollback()
             except Exception:  # noqa: BLE001

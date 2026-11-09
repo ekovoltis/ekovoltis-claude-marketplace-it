@@ -1,5 +1,13 @@
 # Zmiany w pp-support
 
+## 1.4.3 (2026-11-09)
+
+ITS-418, decyzja Michała Kaszty z 2026-11-09.
+
+- `ppcall sql` na hurtowni Fabric (`*.datawarehouse.fabric.microsoft.com`): jawna transakcja zamiast trybu niejawnego, którego Fabric nie zgłasza (`BLAD: … sesja bez trybu transakcji niejawnych`). Połączenie z autocommit, `BEGIN TRANSACTION`, kontrola `@@TRANCOUNT = 1` przed zapytaniem, zapytanie, zawsze `IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION` (także po błędzie). Błąd `BEGIN TRANSACTION` albo inny `@@TRANCOUNT` kończy się odmową bez wykonania zapytania. Parser zapytania i `ApplicationIntent=ReadOnly` bez zmian; dla innych serwerów zachowanie jak w 1.4.0. Do potwierdzenia na hurtowni `ekovoltis` po wydaniu (kryterium odbioru).
+- Źródła wstawek do zapytań SQL, dwa wąskie wyjątki: (a) funkcje w warunku `where` akcji Query oraz w `expression` If/Switch/Until nie są traktowane jako budujące tekst; (b) w SetVariable, AppendToStringVariable i AppendToArrayVariable dozwolona jest stała dokładnie `'@{<jedno odwołanie items/item/variables/outputs/body do pola>}'` z opcjonalnym przecinkiem. Każdy inny apostrof w stałej, `concat`, `replace`, `formatString` i `join` poza warunkami są nadal odrzucane. Znane ograniczenie: apostrof w danych pola. Plan B z ITS-418 przechodzi `plan-check` lokalnie.
+- Po przeglądzie bezpieczeństwa: wzorzec `'@{…}',` dopasowany w całości (bez końcowej nowej linii); zmienione źródło wstawki jest sprawdzane razem z akcjami wbudowanymi, z których bierze wartość (przepięcie na istniejącą zmienną ze stałą z poleceniem jest odrzucane); zmienna typu array/object i AppendToArrayVariable to wartość strukturalna (JSON z `[ ]` w zapytaniu) także bez `value`; przed `ROLLBACK` kursor z nieodczytanym wynikiem jest zamykany.
+
 ## 1.4.2 (2026-11-09)
 
 Decyzja Michała Kaszty z 2026-11-09 (przegląd bezpieczeństwa 1.4.1, opcja a).
