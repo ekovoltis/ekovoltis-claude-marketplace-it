@@ -2618,6 +2618,319 @@ expect("sql: pusta lista endpointow wylacza komende",
 for f in (WORK / "zgloszenia/ITS-426").glob("*_DANE_OSOBOWE.json"):
     f.unlink()
 
+print("38. 1.4.1: item() w petli tylko przy adresie, zapytania SQL w flow-patch (ITS-418)")
+DVHOST = {"connectionName": "shared_commondataserviceforapps_1", "operationId": "ListRecords",
+          "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps"}
+SQLHOST = {"connectionName": "shared_sql_2", "operationId": "ExecutePassThroughNativeQuery_V2",
+           "apiId": "/providers/Microsoft.PowerApps/apis/shared_sql"}
+SQL_OLD = ("WITH PV AS (SELECT NumerPPE, SUM(Produkcja) AS ProdukcjaMWh FROM dbo.produkcja "
+           "WHERE NumerPPE IN (@{variables('JW')}) GROUP BY NumerPPE) SELECT * FROM PV;")
+SQL_NEW = ("WITH PV AS (SELECT NumerPPE, SUM(Produkcja) AS ProdukcjaMWh FROM dbo.produkcja "
+           "WHERE NumerPPE NOT IN (@{variables('JW')}) GROUP BY NumerPPE), FW AS (SELECT NumerPPE, "
+           "SUM(Produkcja) AS ProdukcjaFWMWh FROM dbo.produkcja GROUP BY NumerPPE) "
+           "SELECT PV.*, FW.ProdukcjaFWMWh FROM PV LEFT JOIN FW ON FW.NumerPPE = PV.NumerPPE")
+
+
+def dv(entity, extra=None, ra=None):
+    return {"type": "OpenApiConnection", "runAfter": ra or {},
+            "inputs": {"host": dict(DVHOST), "parameters": {"entityName": entity, **(extra or {})},
+                       "authentication": "@parameters('$authentication')"}}
+
+
+DEF6 = {"properties": {"connectionReferences": {}, "definition": {"triggers": {"manual": {"type": "Request"}}, "actions": {
+    "Init_JW": {"type": "InitializeVariable", "runAfter": {},
+                "inputs": {"variables": [{"name": "JW", "type": "string", "value": ""}]}},
+    "Apply_to_each": {"type": "Foreach", "runAfter": {"Init_JW": ["Succeeded"]}, "foreach": "@triggerBody()?['umowy']",
+                      "actions": {
+                          "List_rows": dv("eko_umowy", {"$filter": "eko_id eq '@{item()?['id']}'"}),
+                          "List_rows_3": dv("eko_atrybuty", {"$filter": "eko_umowa eq '@{item()?['id']}'",
+                                                             "$expand": "eko_jednostka"},
+                                            {"List_rows": ["Succeeded"]}),
+                          "Append_JW": {"type": "AppendToStringVariable", "runAfter": {"List_rows_3": ["Succeeded"]},
+                                        "inputs": {"name": "JW", "value": "@{item()?['ppe']},"}},
+                          "PobierzdanePPE": {"type": "OpenApiConnection", "runAfter": {"Append_JW": ["Succeeded"]},
+                                             "inputs": {"host": dict(SQLHOST),
+                                                        "parameters": {"server": "default", "database": "default",
+                                                                       "query/query": SQL_OLD},
+                                                        "authentication": "@parameters('$authentication')"}},
+                          "Scope_dane": {"type": "Scope", "runAfter": {"PobierzdanePPE": ["Succeeded"]}, "actions": {
+                              "Select_3": {"type": "Select", "runAfter": {},
+                                           "inputs": {"from": "@body('PobierzdanePPE')?['resultsets']?['Table1']",
+                                                      "select": {"PPE": "@item()?['NumerPPE']",
+                                                                 "PV": "@item()?['ProdukcjaMWh']"}}}}},
+                      }},
+}}}}
+LOOP = ["properties", "definition", "actions", "Apply_to_each", "actions"]
+
+
+def wf6(d):
+    return {"ismanaged": False, "category": 5, "modifiedon": "m", "clientdata": json.dumps(d)}
+
+
+def defn6(new, old=None):
+    return C.flow_definition_live_problems({"oczekiwany_modifiedon": "m"}, wf6(old or DEF6), new)[0]
+
+
+def patch6(changes, d=None):
+    return C.flow_patch_live_problems({"oczekiwany_modifiedon": "m", "zmiany": changes}, wf6(d or DEF6))[0]
+
+
+def planA(d):
+    a = d["properties"]["definition"]["actions"]
+    a["Init_JW_FW"] = {"type": "InitializeVariable", "runAfter": {"Init_JW": ["Succeeded"]},
+                       "inputs": {"variables": [{"name": "JW_FW", "type": "string", "value": ""}]}}
+    a["Apply_to_each"]["runAfter"] = {"Init_JW_FW": ["Succeeded"]}
+    inner = a["Apply_to_each"]["actions"]
+    inner["Filter_array_JW_FW"] = {"type": "Query", "runAfter": {"List_rows_3": ["Succeeded"]},
+                                   "inputs": {"from": "@body('List_rows_3')?['value']",
+                                              "where": "@equals(item()?['eko_technologytype'], 1)"}}
+    inner["Apply_to_each_JW_FW"] = {"type": "Foreach", "runAfter": {"Filter_array_JW_FW": ["Succeeded"]},
+                                    "foreach": "@body('Filter_array_JW_FW')", "actions": {
+                                        "Append_JW_FW": {"type": "AppendToStringVariable", "runAfter": {},
+                                                         "inputs": {"name": "JW_FW", "value": "@{item()?['ppe']},"}}}}
+    inner["Append_JW"]["runAfter"] = {"Apply_to_each_JW_FW": ["Succeeded"]}
+    inner["Scope_dane"]["actions"]["Select_3"]["inputs"]["select"]["FW"] = "@item()?['ProdukcjaFWMWh']"
+    return d
+
+
+expect("ITS-418: konektory w petli bez item() w adresie nie czynia petli wrazliwa",
+       sorted(n for k, n in C.sensitive_refs(DEF6) if k == "act"), [])
+expect("ITS-418: plan A (nowe akcje wbudowane w petli) przechodzi flow-definition", defn6(planA(copy.deepcopy(DEF6))), [])
+LR3 = LOOP + ["List_rows_3", "inputs", "parameters", "$expand"]
+SQLQ = LOOP + ["PobierzdanePPE", "inputs", "parameters", "query/query"]
+expect("ITS-418: flow-patch $expand w petli przechodzi",
+       patch6([{"sciezka": LR3, "bylo": "eko_jednostka", "ma_byc": "eko_jednostka($select=eko_technologytype)"}]), [])
+expect("ITS-418: flow-patch zapytania SQL (SELECT -> SELECT z CTE) przechodzi",
+       patch6([{"sciezka": SQLQ, "bylo": SQL_OLD, "ma_byc": SQL_NEW}]), [])
+
+
+def mod6(change):
+    d = copy.deepcopy(DEF6)
+    change(d["properties"]["definition"]["actions"], d["properties"]["definition"]["actions"]["Apply_to_each"]["actions"])
+    return d
+
+
+HTTP_ITEM = {"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "https://api.example.com/@{item()?['id']}"}}
+for label, change, sens in [
+    ("item() w adresie akcji w petli", lambda a, i: i.update(H=copy.deepcopy(HTTP_ITEM)), "apply_to_each"),
+    ("item() przez Compose", lambda a, i: i.update(
+        Cmp={"type": "Compose", "runAfter": {}, "inputs": "@item()?['id']"},
+        H={"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "https://api.example.com/@{outputs('Cmp')}"}}),
+     "apply_to_each"),
+    ("item() przez zmienna", lambda a, i: (a.update(Init_U={"type": "InitializeVariable", "runAfter": {},
+                                                           "inputs": {"variables": [{"name": "U", "type": "string"}]}}),
+                                          i.update(SetU={"type": "SetVariable", "runAfter": {},
+                                                         "inputs": {"name": "U", "value": "@item()?['id']"}},
+                                                   H={"type": "Http", "runAfter": {},
+                                                      "inputs": {"method": "GET", "uri": "@variables('U')"}})),
+     "apply_to_each"),
+    ("items('zewnetrzna') w petli zagniezdzonej", lambda a, i: i.update(
+        Inner={"type": "Foreach", "runAfter": {}, "foreach": "@createArray(1,2)", "actions": {
+            "H": {"type": "Http", "runAfter": {},
+                  "inputs": {"method": "GET", "uri": "https://api.example.com/@{items('Apply_to_each')?['id']}"}}}}),
+     "apply_to_each"),
+    ("result('<zakres>') w adresie", lambda a, i: i.update(
+        H={"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "https://x/@{result('Scope_dane')}"}}),
+     "select_3"),
+    ("outputs('<petla>') w adresie", lambda a, i: a.update(
+        H={"type": "Http", "runAfter": {}, "inputs": {"method": "POST", "uri": "https://x/@{outputs('Apply_to_each')}"}}),
+     "list_rows_3"),
+]:
+    d = mod6(change)
+    expect(f"petle: nadal wrazliwe: {label}", sens in {n for k, n in C.sensitive_refs(d)}, True)
+d = mod6(lambda a, i: i.update(H=copy.deepcopy(HTTP_ITEM)))
+changed = copy.deepcopy(d)
+changed["properties"]["definition"]["actions"]["Apply_to_each"]["foreach"] = "@triggerBody()?['inne']"
+expect("petle: zmiana foreach petli z item() w adresie zablokowana", bool(defn6(changed, d)), True)
+d2 = mod6(lambda a, i: i.update(
+    Inner={"type": "Foreach", "runAfter": {}, "foreach": "@createArray(1,2)", "actions": {
+        "H": {"type": "Http", "runAfter": {},
+              "inputs": {"method": "GET", "uri": "https://api.example.com/@{items('Apply_to_each')?['id']}"}}}}))
+expect("petle: items('zewnetrzna') nie czyni wewnetrznej petli zrodlem",
+       "inner" in {n for k, n in C.sensitive_refs(d2)}, False)
+d3 = mod6(lambda a, i: i.update(
+    H={"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "https://api.example.com/@{item()?['id']}"}}))
+expect("petle: przy item() nie rozwija akcji w srodku petli", "select_3" in {n for k, n in C.sensitive_refs(d3)}, False)
+d4 = mod6(lambda a, i: i.update(
+    H={"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "@{variables(concat('a','b'))}"}}))
+expect("petle: nazwa wyliczana nadal blokuje", C.ANY_REF in C.sensitive_refs(d4), True)
+d5 = mod6(lambda a, i: i.update(
+    Sel={"type": "Select", "runAfter": {}, "inputs": {"from": "@item()?['linie']", "select": {"a": "@item()?['a']"}}},
+    H={"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "https://x/@{body('Sel')}"}}))
+expect("petle: item() w 'from' akcji Select w petli wskazuje petle", "apply_to_each" in {n for k, n in C.sensitive_refs(d5)}, True)
+d6 = mod6(lambda a, i: a.update(
+    Sel={"type": "Select", "runAfter": {}, "inputs": {"from": "@triggerBody()?['x']", "select": {"a": "@item()?['a']"}}},
+    H={"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "https://x/@{body('Sel')}"}}))
+expect("petle: item() w mapowaniu Select poza petla nie wskazuje petli", sorted(n for k, n in C.sensitive_refs(d6)), ["sel"])
+d7 = mod6(lambda a, i: a.update(
+    U={"type": "Until", "expression": "@equals(1,1)", "limit": {"count": 3}, "runAfter": {}, "actions": {
+        "H": {"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "https://x/@{iterationIndexes('U')}"}}}}))
+d8 = mod6(lambda a, i: (a.update(Init_Q={"type": "InitializeVariable", "runAfter": {},
+                                        "inputs": {"variables": [{"name": 'u"rl', "type": "string"}]}}),
+                       i.update(H={"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": "@variables('u\"rl')"}})))
+expect("nazwa zmiennej z cudzyslowem zgodna z defines()", ("var", 'u"rl') in C.sensitive_refs(d8), True)
+expect("petle: iterationIndexes('<petla>') w adresie", "u" in {n for k, n in C.sensitive_refs(d7)}, True)
+
+for label, old, new, bad in [
+    ("SELECT -> DELETE odrzucone", SQL_OLD, "DELETE FROM dbo.produkcja", True),
+    ("SELECT -> SELECT z DROP po liczbie odrzucone", SQL_OLD, "SELECT 1 AS a WHERE 1=1DROP TABLE dbo.produkcja", True),
+    ("SELECT -> cale wyrazenie odrzucone", SQL_OLD, "@concat('DELETE FROM ', variables('JW'))", True),
+    ("SELECT -> SELECT z CTE przechodzi", SQL_OLD, SQL_NEW, False),
+    ("DML -> DML bez zmian zachowania", "UPDATE dbo.t SET a = 1", "UPDATE dbo.t SET a = 2", False),
+]:
+    d = copy.deepcopy(DEF6)
+    d["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["PobierzdanePPE"]["inputs"]["parameters"]["query/query"] = old
+    errs6 = patch6([{"sciezka": SQLQ, "bylo": old, "ma_byc": new}], d)
+    expect(f"SQL w flow-patch: {label}", any("zapytanie SQL" in e for e in errs6), bad)
+for label, old, new, bad in [
+    ("wyrazenie z tekstem w nowym zapytaniu", "SELECT a FROM t", "SELECT a FROM t WHERE 1=@{'1; DELETE FROM t'}", True),
+    ("concat w nowym zapytaniu", "SELECT a FROM t", "SELECT a FROM t @{concat('; DROP',' TABLE t')}", True),
+    ("wyrazenie z formatem przeniesione z literalu poza literal",
+     "SELECT a FROM t WHERE b = '@{formatDateTime(variables('D'), 'yyyy')}'",
+     "SELECT a FROM t WHERE b = @{formatDateTime(variables('D'), 'yyyy')}", True),
+    ("powtorzone wyrazenie ze starego zapytania przechodzi",
+     "SELECT a FROM t WHERE b < '@{formatDateTime(variables('D'), 'yyyy')}'",
+     "SELECT a FROM t WHERE b < '@{formatDateTime(variables('D'), 'yyyy')}' AND c < '@{formatDateTime(variables('D'), 'yyyy')}'", False),
+    ("nowe wyrazenie na danych (plan B) przechodzi", "SELECT a FROM t",
+     "SELECT a FROM t WHERE b IN (@{if(empty(variables('JW_FW')), , substring(variables('JW_FW'), 0, sub(length(variables('JW_FW')), 1)))})", False),
+    ("nowe wyrazenie z workflow() odrzucone", "SELECT a FROM t",
+     "SELECT a FROM t WHERE b = @{substring(string(workflow()), 0, 5)}", True),
+    ("nowe wyrazenie z formatem tekstowym odrzucone", "SELECT a FROM t",
+     "SELECT a FROM t @{formatDateTime(utcNow(), '\'; DROP TABLE t\'')}", True),
+    ("nowe wyrazenie z polem przechodzi", "SELECT a FROM t",
+     "SELECT a FROM t WHERE b = '@{items('Apply_to_each')?['NumerPPE']}'", False),
+    ("nowe odwolanie do danych przechodzi", "SELECT a FROM t WHERE b IN (@{variables('JW')})",
+     "SELECT a FROM t WHERE b IN (@{variables('JW')}) OR c IN (@{variables('JW_FW')})", False),
+    ("nowe odwolanie do wejscia wyzwalacza odrzucone", "SELECT a FROM t",
+     "SELECT a FROM t WHERE id = @{triggerBody()?['id']}", True),
+    ("nowe wyrazenie z true odrzucone", "SELECT a FROM t", "SELECT a FROM t WHERE b = @{concat(true)}", True),
+    ("nowy literal z myslnikami odrzucony", "SELECT a FROM t", "SELECT a FROM t WHERE b = 1 @{concat('--')}", True),
+    ("nowy literal z jednym apostrofem odrzucony", "SELECT 'x' AS a", "SELECT 'x@{concat('''')}' AS a", True),
+    ("apostrof wyciety z parzystego literalu odrzucony", "SELECT 'x' AS a",
+     "SELECT 'x@{substring('''''', 0, 1)}; DELETE FROM t --' AS a", True),
+    ("sklejenie z tekstem polecenia", "SELECT 1 AS a WHERE b = @{variables('X')}",
+     "SELECT 1 AS a WHERE b = 1 DEL@{variables('X')}ETE FROM t", True),
+    ("pusty literal sklejajacy slowo", "SELECT 1 AS a", "SELECT 1 AS a DEL@{''}ETE FROM t", True),
+    ("literal z apostrofem w literale", "SELECT 'x' AS a", "SELECT 'x@{''''}; DELETE FROM t --' AS a", True),
+    ("wyrazenie z minusem tworzacym komentarz", "SELECT 1 AS a WHERE b = @{variables('X')}",
+     "SELECT 1 AS a WHERE b = 1 -@{variables('X')}", True),
+    ("to samo wyrazenie w literale przechodzi", "SELECT a FROM t WHERE b = '@{variables('JW')}'",
+     "SELECT a, c FROM t WHERE b = '@{variables('JW')}'", False),
+]:
+    d = copy.deepcopy(DEF6)
+    d["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["PobierzdanePPE"]["inputs"]["parameters"]["query/query"] = old
+    errs6 = patch6([{"sciezka": SQLQ, "bylo": old, "ma_byc": new}], d)
+    expect(f"SQL w flow-patch: {label}", any("zapytanie SQL" in e for e in errs6), bad)
+SQLSRV6 = LOOP + ["PobierzdanePPE", "inputs", "parameters", "server"]
+expect("SQL w flow-patch: zmiana serwera odrzucona",
+       any("tylko tekst zapytania" in e for e in patch6([{"sciezka": SQLSRV6, "bylo": "default", "ma_byc": "evil.database.windows.net"}])), True)
+d = copy.deepcopy(DEF6)
+d["properties"]["definition"]["actions"]["Init_S"] = {"type": "InitializeVariable", "runAfter": {},
+                                                     "inputs": {"variables": [{"name": "S", "type": "string", "value": "srv"}]}}
+d["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["PobierzdanePPE"]["inputs"]["parameters"]["server"] = "@variables('S')"
+expect("SQL: zmienna z serwerem jest wrazliwa", ("var", "s") in C.sensitive_refs(d), True)
+for label, uri in [("\\n przed item()", "https://x/@{\nitem()?['id']}"), ("\\t przed variables", "@{\tvariables('U')}"),
+                   ("\\n przed items('L')", "https://x/@{\nitems('Apply_to_each')}")]:
+    d = mod6(lambda a, i: (a.update(Init_U={"type": "InitializeVariable", "runAfter": {},
+                                            "inputs": {"variables": [{"name": "U", "type": "string"}]}}),
+                           i.update(H={"type": "Http", "runAfter": {}, "inputs": {"method": "GET", "uri": uri}})))
+    expect(f"bialy znak przed funkcja: {label}", bool(C.sensitive_refs(d) & {("act", "apply_to_each"), ("var", "u")}), True)
+d = mod6(lambda a, i: (a.update(Init_U={"type": "InitializeVariable", "runAfter": {},
+                                        "inputs": {"variables": [{"name": "U", "type": "string"}]}}),
+                       i.update(Cond={"type": "If", "runAfter": {}, "expression": {"equals": ["@item()?['env']", "prod"]},
+                                      "actions": {"SetU": {"type": "SetVariable", "runAfter": {},
+                                                           "inputs": {"name": "U", "value": "@item()?['url']"}}}},
+                                H={"type": "Http", "runAfter": {"Cond": ["Succeeded"]},
+                                   "inputs": {"method": "GET", "uri": "@variables('U')"}})))
+expect("warunek nad akcja ustawiajaca adres jest wrazliwy", ("act", "cond") in C.sensitive_refs(d), True)
+CONDX = LOOP + ["Cond", "expression"]
+expect("flow-patch warunku nad akcja ustawiajaca adres odrzucony",
+       any("akcja ustawia" in e for e in patch6([{"sciezka": CONDX, "bylo": {"equals": ["@item()?['env']", "prod"]},
+                                                  "ma_byc": {"equals": ["@item()?['env']", "test"]}}], d)), True)
+INITJW = ["properties", "definition", "actions", "Init_JW", "inputs", "variables", "0", "value"]
+expect("zrodla SQL: Init_JW jest zrodlem wstawki do PobierzdanePPE",
+       C.sql_source_hits(C.defines("Init_JW", DEF6["properties"]["definition"]["actions"]["Init_JW"]),
+                         C.sql_insert_sources(DEF6)), ["PobierzdanePPE"])
+for label, new, bad in [("stala z liczbami przechodzi", "590556731701300006,590556731701300007", False),
+                        ("stala ze srednikiem odrzucona", "1; DELETE FROM t", True),
+                        ("stala z apostrofem odrzucona", "1') OR ('1", True),
+                        ("stala ze slowem zapisu odrzucona", "1) UNION SELECT 1 FROM t WHERE 1 IN (DELETE", True),
+                        ("wyrazenie z literalem ze srednikiem odrzucone", "@{concat('1', '; DROP TABLE t')}", True),
+                        ("wartosc wyliczana z danych przechodzi (znane ograniczenie)", "@{triggerBody()?['ppe']}", False)]:
+    errs6 = patch6([{"sciezka": INITJW, "bylo": "", "ma_byc": new}])
+    expect(f"zrodla SQL: {label}", any("zapytania SQL" in e for e in errs6), bad)
+for label, old, new, bad in [
+    ("nowe wyrazenie w nazwie w nawiasach", "SELECT a FROM t WHERE x = 1",
+     "SELECT a FROM [t@{split('1',' ')} ; DELETE FROM t --]", True),
+    ("split wstawiony jako tablica", "SELECT a FROM t WHERE x = 1",
+     "SELECT a FROM t WHERE x = '@{take(split('1 2',' '),1)}'", True),
+    ("first ze split przechodzi", "SELECT a FROM t WHERE x = 1",
+     "SELECT a FROM t WHERE x = '@{first(split(variables('S'), ','))}'", False),
+    ("liczba ujemna cieta jako tekst daje --", "SELECT a FROM t WHERE x = 1",
+     "SELECT a FROM t WHERE x = 1 @{concat(substring(concat(sub(0,1)),0,1),sub(0,1))} '\nDELETE FROM t --'", True),
+    ("dwa sasiednie wyrazenia", "SELECT a FROM t WHERE x = 1",
+     "SELECT a FROM t WHERE x = 1 @{length(variables('A'))}@{length(variables('B'))}", True),
+    ("wyrazenie dajace minus sklejone z minusem", "SELECT a FROM t WHERE x = 1",
+     "SELECT a FROM t WHERE x = 1 @{substring(concat(sub(0,1)),0,1)}- 1", True),
+    ("stare wyrazenie przeniesione z literalu do komentarza", "SELECT a FROM t WHERE n = '@{replace(triggerBody()?['n'],'''','''''')}'",
+     "SELECT a FROM t WHERE n = 'x' -- @{replace(triggerBody()?['n'],'''','''''')}", True),
+    ("stare wyrazenie przeniesione do nazwy w nawiasach", "SELECT a FROM t WHERE n = '@{replace(triggerBody()?['n'],'''','''''')}'",
+     "SELECT [a @{replace(triggerBody()?['n'],'''','''''')}] FROM t", True),
+]:
+    d = copy.deepcopy(DEF6)
+    d["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["PobierzdanePPE"]["inputs"]["parameters"]["query/query"] = old
+    errs6 = patch6([{"sciezka": SQLQ, "bylo": old, "ma_byc": new}], d)
+    expect(f"SQL w flow-patch: {label}", any("zapytanie SQL" in e for e in errs6), bad)
+DQ = copy.deepcopy(DEF6)
+DQ["properties"]["definition"]["actions"]["Init_V"] = {"type": "InitializeVariable", "runAfter": {},
+                                                      "inputs": {"variables": [{"name": "V", "type": "string", "value": "1"}]}}
+DQ["properties"]["definition"]["actions"]["Cmp"] = {"type": "Compose", "runAfter": {}, "inputs": "1"}
+QOLD = "SELECT a FROM t WHERE id = @{outputs('Cmp')}"
+DQ["properties"]["definition"]["actions"]["Apply_to_each"]["actions"]["PobierzdanePPE"]["inputs"]["parameters"]["query/query"] = QOLD
+INITV = ["properties", "definition", "actions", "Init_V", "inputs", "variables", "0", "value"]
+CMPV = ["properties", "definition", "actions", "Cmp", "inputs"]
+QNEW = "SELECT a FROM t WHERE id = @{outputs('Cmp')} OR id = @{variables('V')}"
+expect("zrodla SQL: zmienna i nowe wyrazenie w jednym kroku",
+       any("zapytania SQL" in e or "zapytanie SQL" in e or "do zapytania" in e for e in patch6(
+           [{"sciezka": INITV, "bylo": "1", "ma_byc": "1 DELETE FROM t"},
+            {"sciezka": SQLQ, "bylo": QOLD, "ma_byc": QNEW}], DQ)), True)
+DQ2 = copy.deepcopy(DQ)
+DQ2["properties"]["definition"]["actions"]["Init_V"]["inputs"]["variables"][0]["value"] = "1 DELETE FROM t"
+expect("zrodla SQL: nowe wyrazenie podlaczajace istniejaca stala z poleceniem",
+       any("do zapytania" in e for e in patch6([{"sciezka": SQLQ, "bylo": QOLD, "ma_byc": QNEW}], DQ2)), True)
+expect("zrodla SQL: nowe wyrazenie podlaczajace bezpieczna stala przechodzi",
+       patch6([{"sciezka": SQLQ, "bylo": QOLD, "ma_byc": QNEW}], DQ), [])
+for label, new, bad in [("slowo sklejone z literalem", "1 DEL@{'ETE'} FROM t", True),
+                        ("concat liter", "1 @{concat('DEL','ETE')} FROM t", True),
+                        ("toUpper", "@{toUpper('del')}ETE FROM t", True),
+                        ("base64ToString", "@{base64ToString('MSBERUxFVEUgRlJPTSB0')}", True),
+                        ("cale wyrazenie base64ToString", "@base64ToString('MSBERUxFVEUgRlJPTSB0')", True),
+                        ("SELECT INTO", "* INTO dbo.kopia", True),
+                        ("GRANT", "1 GRANT CONTROL TO x", True),
+                        ("slowo zlozone przez if", "DEL@{if(equals(1,1),'ETE','X')} FROM t", True),
+                        ("poczatek komentarza blokowego", "1 /*", True),
+                        ("komentarz liniowy", "1 --", True),
+                        ("cudzyslow i nawias nazwy", 'a"]', True),
+                        ("data z myslnikami przechodzi", "2026-01-01", False),
+                        ("tablica", ["1"], True),
+                        ("obiekt", {"1": "1"}, True),
+                        ("liczba przechodzi", "42", False)]:
+    errs6 = patch6([{"sciezka": CMPV, "bylo": "1", "ma_byc": new}], DQ)
+    expect(f"zrodla SQL: stala w Compose: {label}", any("zapytania SQL" in e for e in errs6), bad)
+P = importlib.reload(P)
+P.read_workflow = lambda step: wf6(DEF6)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    P.flow_patch_preview({"oczekiwany_modifiedon": "m", "zmiany": [{"sciezka": INITJW, "bylo": "", "ma_byc": "1"}],
+                          "srodowisko": DV, "workflowid": WF3})
+expect("plan-check oznacza zmiane zrodla wstawki SQL",
+       "[zmienia dane wstawiane do zapytania SQL: PobierzdanePPE]" in buf.getvalue(), True)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    P.flow_patch_preview({"oczekiwany_modifiedon": "m", "zmiany": [{"sciezka": SQLQ, "bylo": SQL_OLD, "ma_byc": SQL_NEW}],
+                          "srodowisko": DV, "workflowid": WF3})
+expect("plan-check oznacza zmiane zapytania SQL", "ZAPYTANIE SQL: stare tylko odczyt: tak, nowe tylko odczyt: tak" in buf.getvalue(), True)
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

@@ -505,7 +505,7 @@ def _strip_sql(query: str) -> tuple[str | None, str | None]:
     return "".join(out), None
 
 
-def sql_query_problem(query: str, db: str | None = None) -> str | None:
+def sql_query_problem(query: str, db: str | None = None, check_names: bool = True) -> str | None:
     """Jedno polecenie SELECT albo WITH ... SELECT. Sprawdzaja hook i ppcall przed wyslaniem do serwera."""
     q = query or ""
     if not q.strip():
@@ -548,7 +548,7 @@ def sql_query_problem(query: str, db: str | None = None) -> str | None:
     if main_selects != 1:
         return ("ppcall sql: dozwolone jest jedno polecenie SELECT (zapytania laczy UNION, EXCEPT, INTERSECT); "
                 f"znaleziono {main_selects}.")
-    return sql_names_problem(raw_tokens, db)
+    return sql_names_problem(raw_tokens, db) if check_names else None
 
 
 def sql_names_problem(tokens: list[str], db: str | None) -> str | None:
@@ -1000,6 +1000,10 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
                             f"a akcja ma typ {actual}")
         set_at(changed, ch["sciezka"], ch["ma_byc"])
     sensitive = sensitive_refs(definition)
+    # zrodla wstawek ze starej i z nowej definicji: krok moze podlaczyc nowe zrodlo do zapytania
+    sql_sources = sql_insert_sources(definition)
+    for ref, names in sql_insert_sources(changed).items():
+        sql_sources.setdefault(ref, set()).update(names)
     for ch in step.get("zmiany") or []:
         i, _ = _split_flow_patch_path(ch["sciezka"])
         name = ch["sciezka"][i - 1]
@@ -1010,6 +1014,32 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
         hit = sensitive_hit(defines(name, target), sensitive)
         exception, why = sp_filename_exception(definition, ch)
         keys_l = [k.lower() for k in ch["sciezka"][i:]]
+        sql = flow_patch_sql_check(target, ch, i)
+        if sql and sql["problem"]:
+            errs.append(f"{flow_patch_label(ch['sciezka'])}: {sql['problem']}")
+        for expr in (sql or {}).get("nowe_wyrazenia") or []:
+            bad = sql_new_expr_sources_problem(changed, name, expr)
+            if bad:
+                errs.append(f"{flow_patch_label(ch['sciezka'])}: nowe wyrazenie {expr[:60]} wstawia do zapytania "
+                            f"SQL wartosc ze zrodla, ktore {bad}")
+        sql_hits = sql_source_hits(defines(name, target), sql_sources)
+        # wynik konektora to dane z czasu dzialania (znane ograniczenie): stale sprawdzane w akcjach wbudowanych
+        builtin = str(action_type(target) or "").lower() in FLOW_SAFE_TYPES
+        bad = sql_insert_problem(ch.get("ma_byc")) if sql_hits and builtin else None
+        if sql_hits and builtin and not bad:
+            try:
+                if structured_output(get_at(changed, ch["sciezka"][:i])):
+                    bad = "nowa wartosc to tablica albo obiekt (do tekstu trafia JSON z [ ] i \")"
+            except KeyError:
+                pass
+        if bad:
+            errs.append(f"{flow_patch_label(ch['sciezka'])}: zmienia dane wstawiane do zapytania SQL "
+                        f"({', '.join(sql_hits)}): {bad}")
+        if sql_query_action(target) and keys_l[:2] == ["inputs", "parameters"] and \
+                not _sql_query_key("/".join(keys_l[2:])):
+            errs.append(f"{flow_patch_label(ch['sciezka'])}: w akcji SQL mozna zmienic tylko tekst zapytania; "
+                        "serwer i baza wskazuja, dokad trafia zapytanie")
+            continue
         if sp_write_action(target) and keys_l[:2] == ["inputs", "parameters"] and keys_l[2:3] != ["body"]:
             errs.append(f"{flow_patch_label(ch['sciezka'])}: w akcji zapisu SharePoint mozna zmienic tylko tresc (body); "
                         "parametry wskazuja, gdzie i co zapisac")
@@ -1026,7 +1056,8 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
                 errs.append(f"{flow_patch_label(ch['sciezka'])}: wyjatek dla nazwy pliku SharePoint nie ma zastosowania: {why}")
             errs.append(f"{flow_patch_label(ch['sciezka'])}: akcja ustawia {', '.join(hit)}, z czego akcja wysylajaca "
                         "bierze adres, naglowki albo uwierzytelnienie; takiej zmiany nie wolno robic krokiem flow-patch")
-        if len(SECRET_REF_RE.findall(canon(ch["ma_byc"]))) > len(SECRET_REF_RE.findall(canon(ch["bylo"]))):
+        if len(SECRET_REF_RE.findall(_expr_view(canon(ch["ma_byc"])))) > \
+                len(SECRET_REF_RE.findall(_expr_view(canon(ch["bylo"])))):
             errs.append(f"{flow_patch_label(ch['sciezka'])}: wyrazenie actions(...) albo pole authentication (odczyt "
                         "wejsc innej akcji z danymi logowania) jest zabronione")
         if flow_patch_required_type(ch["sciezka"]) == ("*",):
@@ -1037,6 +1068,420 @@ def flow_patch_live_problems(step: dict, workflow: dict) -> tuple[list[str], dic
             errs.extend(f"{flow_patch_label(ch['sciezka'])}: {e}" for e in run_after_graph_problems(scope))
     return errs, definition
 
+
+# ---------------------------------------------------------------- flow-patch: zapytanie SQL (1.4.1, ITS-418)
+# Zapytanie, ktore bylo tylko odczytem wedlug parsera ppcall sql, po zmianie tez musi nim byc. Zapytania, ktore juz
+# zmieniaja dane, flow-patch zmienia tak jak dotad (bez nowych ograniczen).
+SQL_QUERY_OPERATION_RE = re.compile(r"^execute(passthrough)?nativequery", re.I)
+
+
+def sql_query_action(action) -> bool:
+    """Akcja konektora wykonujaca tekst zapytania SQL (np. ExecutePassThroughNativeQuery_V2)."""
+    if not isinstance(action, dict) or str(action_type(action) or "").lower() not in ("openapiconnection", "apiconnection"):
+        return False
+    inputs = _ci(action, "inputs")
+    host = _ci(inputs, "host")
+    if isinstance(host, dict) and SQL_QUERY_OPERATION_RE.match(str(_ci(host, "operationid") or "")):
+        return True
+    return "/query/sql" in str(_ci(inputs, "path") or "").lower()
+
+
+# Nowe wyrazenie w zapytaniu SQL (decyzja Michala Kaszty z 2026-11-09, ITS-418): tylko funkcje operujace na
+# danych, odwolania do zmiennych i wynikow akcji po nazwie (bez wejscia wyzwalacza) i literaly, ktore nie zmieniaja
+# kontekstu SQL: cyfry, spacje, przecinki, kropki, nawiasy i parzysta liczba apostrofow (literal z szescioma apostrofami daje '').
+SQL_EXPR_DATA_FUNCS = {"if", "empty", "equals", "not", "and", "or", "greater", "less", "greaterorequals",
+                       "lessorequals", "substring", "length", "sub", "add", "mul", "div", "mod", "min", "max", "trim",
+                       "first", "last", "split", "join", "concat", "coalesce", "int", "float", "skip", "take",
+                       "indexof", "lastindexof"}
+SQL_EXPR_REF_FUNCS = {"variables", "outputs", "body", "items", "item", "actionoutputs", "actionbody"}
+_WDL_TOKEN_RE = re.compile(r"'(?:[^']|'')*'|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|\s+|[(),?\[\]]|.", re.S)
+_SAFE_LITERAL_RE = re.compile(r"[0-9 ,.()']*")
+WHOLE_VALUE_FUNCS = {"if", "coalesce", "concat"}
+
+
+def _wdl_literals(expr: str, refs: set | None = None) -> tuple[list, bool]:
+    """Literaly tekstowe wyrazenia WDL (po rozwinieciu '') poza nazwami odwolan i pol, oraz czy wyrazenie
+    sklada sie tylko z dozwolonych elementow (funkcje na danych, odwolania po nazwie)."""
+    refs = SQL_EXPR_REF_FUNCS if refs is None else refs
+    tokens = [x for x in _WDL_TOKEN_RE.findall(expr) if not x.isspace()]
+    literals, safe, stack = [], True, []  # stack: [funkcja, numer argumentu]
+    for n, tok in enumerate(tokens):
+        prev = tokens[n - 1] if n else ""
+        prev2 = tokens[n - 2].lower() if n > 1 else ""
+        nxt = tokens[n + 1] if n + 1 < len(tokens) else ""
+        if tok.startswith("'") and tok.endswith("'") and len(tok) > 1:
+            if (prev == "(" and prev2 in refs and nxt == ")") or (prev == "[" and nxt == "]"):
+                continue
+            literals.append((tok[1:-1].replace("''", "'"), tuple(f for f, _ in stack)))
+        elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tok):
+            if nxt != "(" or tok.lower() not in SQL_EXPR_DATA_FUNCS | refs:
+                safe = False
+            elif tok.lower() in NUMERIC_FUNCS and not _numeric_slot(stack):
+                safe = False  # liczba (np. -1 z sub) wstawiona jako tekst moze dac -- albo /*
+            elif tok.lower() == "split" and (not stack or stack[-1][0] not in ARRAY_CONSUMERS or stack[-1][1] != 0):
+                safe = False  # tablica wstawiona jako tekst to JSON z [ ] i "
+        elif tok == "(":
+            stack.append([prev.lower() if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", prev) else "(", 0])
+        elif tok == ")":
+            if stack:
+                stack.pop()
+        elif tok == ",":
+            if stack:
+                stack[-1][1] += 1
+        elif not re.fullmatch(r"\d+(?:\.\d+)?|[?\[\]]", tok):
+            safe = False
+    return literals, safe
+
+
+# Funkcje dajace liczbe: dozwolone tylko tam, gdzie wynik jest uzyty jako liczba, a nie wstawiony jako tekst.
+NUMERIC_FUNCS = {"sub", "add", "mul", "div", "mod", "min", "max", "int", "float", "length", "indexof", "lastindexof"}
+_NUMBER_PARAMS = {"substring": 1, "take": 1, "skip": 1}  # od ktorego argumentu funkcja przyjmuje liczby
+ARRAY_CONSUMERS = {"first", "last", "join", "length", "empty"}  # zamieniaja tablice z split na tekst albo liczbe
+_NUMBER_CONSUMERS = NUMERIC_FUNCS | {"equals", "greater", "less", "greaterorequals", "lessorequals"}
+
+
+def _numeric_slot(stack: list) -> bool:
+    if not stack:
+        return False
+    func, arg = stack[-1]
+    if func in _NUMBER_CONSUMERS:
+        return True
+    if func in _NUMBER_PARAMS:
+        return arg >= _NUMBER_PARAMS[func]
+    return func == "if" and arg == 0
+
+
+def _safe_sql_expr(expr: str) -> bool:
+    """Nowe wyrazenie @{...} w zapytaniu: wstawia tylko dane, a jego literaly nie zmieniaja kontekstu SQL."""
+    if not (expr.startswith("@{") and expr.endswith("}")):
+        return False
+    literals, safe = _wdl_literals(expr[2:-1])
+    # Apostrofy tylko w literale zwracanym w calosci (if, coalesce, concat): substring, first, take itp. moga
+    # wyciac z niego pojedynczy apostrof i zmienic kontekst SQL.
+    return safe and all(_SAFE_LITERAL_RE.fullmatch(v) and v.count("'") % 2 == 0
+                        and ("'" not in v or set(stack) <= WHOLE_VALUE_FUNCS) for v, stack in literals)
+
+
+# Slowa zapisu z decyzji Michala Kaszty (2026-11-09) oraz inne polecenia zmieniajace dane, uprawnienia i stan serwera.
+SQL_WRITE_WORDS_RE = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|INTO|GRANT|"
+                                r"REVOKE|DENY|DECLARE|WAITFOR|BULK|COPY|OPENROWSET|OPENQUERY|OPENDATASOURCE|KILL|"
+                                r"SHUTDOWN|DBCC|BACKUP|RESTORE|RECONFIGURE|SETUSER|RENAME)\b", re.I)
+
+
+def _constant_texts(value) -> list[str]:
+    """Stale fragmenty wartosci flow: tekst z wyrazeniami usunietymi, tekst z wyrazeniami zastapionymi sklejonymi
+    literalami (DEL@{'ETE'} daje DELETE) i same literaly (bez nazw odwolan i pol)."""
+    out: list = []
+    strings: list = []
+    _leaves(value, strings) if not isinstance(value, str) else strings.append(value)
+    for s in strings:
+        if s.startswith("@") and not s.startswith(("@{", "@@")):
+            lits = [v for v, _ in _wdl_literals(s[1:])[0]]
+            out.extend(lits + ["".join(lits)])
+            continue
+        i, n, buf, glued = 0, len(s), [], []
+        while i < n:
+            if s.startswith("@@", i):
+                buf.append("@")
+                glued.append("@")
+                i += 2
+            elif s.startswith("@{", i):
+                depth, j, quote = 0, i + 1, False
+                while j < n:
+                    c = s[j]
+                    if quote:
+                        if c == "'":
+                            quote = False
+                    elif c == "'":
+                        quote = True
+                    elif c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    j += 1
+                lits = [v for v, _ in _wdl_literals(s[i + 2:j])[0]]
+                out.extend(lits)
+                glued.append("".join(lits))
+                i = j + 1
+            else:
+                buf.append(s[i])
+                glued.append(s[i])
+                i += 1
+        out.extend(["".join(buf), "".join(glued)])
+    return out
+
+
+def _value_expressions(value) -> list[str]:
+    """Tresc wszystkich wyrazen w wartosci flow (cale @... i wstawki @{...})."""
+    found: list = []
+    strings: list = []
+    _leaves(value, strings) if not isinstance(value, str) else strings.append(value)
+    for s in strings:
+        if s.startswith("@") and not s.startswith(("@{", "@@")):
+            found.append(s[1:])
+            continue
+        parts = _flow_sql_parts(s, placeholder=False)[1] if "@{" in s else []
+        found.extend(e[2:-1] for e, _, _ in parts)
+    return found
+
+
+def structured_output(action: dict) -> bool:
+    """Akcja wbudowana, ktorej stala wartosc to tablica albo obiekt (wstawiane do tekstu jako JSON z [ ] i ")."""
+    t = str(action_type(action) or "").lower()
+    inputs = _ci(action, "inputs")
+    if t == "compose":
+        return isinstance(inputs, (list, dict))
+    values = [_ci(inputs, "value")]
+    variables = _ci(inputs, "variables")
+    values += [_ci(v, "value") for v in variables if isinstance(v, dict)] if isinstance(variables, list) else []
+    return any(isinstance(v, (list, dict)) for v in values)
+
+
+def sql_insert_problem(value) -> str | None:
+    """Nowa stala wartosc w zrodle wstawki do zapytania SQL: bez srednika, apostrofu i slow zapisu; wyrazenia tylko
+    z funkcji na danych (bez dekodowania tekstu: base64ToString, uriComponentToString, json, toUpper i podobnych)."""
+    for expr in _value_expressions(value):
+        # wejscie wyzwalacza to dane z czasu dzialania (znane ograniczenie), ale funkcje musza byc z listy
+        lits, safe = _wdl_literals(expr, SQL_EXPR_REF_FUNCS | {"triggerbody", "triggeroutputs"})
+        if not safe:
+            return "nowe wyrazenie uzywa funkcji spoza listy funkcji na danych (moglaby zbudowac tekst polecenia)"
+        # literaly w wyrazeniach tylko z cyfr, spacji, przecinkow i kropek: z liter if/concat zlozylyby polecenie
+        if any(not re.fullmatch(r"[0-9 ,.]*", v) for v, _ in lits):
+            return "nowe wyrazenie zawiera literal tekstowy, z ktorego daloby sie zlozyc polecenie SQL"
+    for text in _constant_texts(value):
+        if ";" in text or "'" in text:
+            return "nowa stala wartosc zawiera srednik albo apostrof"
+        # znaczniki komentarza, cudzyslow i nawiasy nazw przesuwaja granice literalow w tekscie zapytania
+        if any(m in text for m in ("--", "/*", "*/", '"', "[", "]", "\n", "\r")) or \
+                text.strip()[:1] in ("-", "/", "*") or text.strip()[-1:] in ("-", "/", "*"):
+            return "nowa stala wartosc zawiera znacznik komentarza SQL, cudzyslow, nawias nazwy albo nowa linie"
+        m = SQL_WRITE_WORDS_RE.search(text)
+        if m:
+            return f"nowa stala wartosc zawiera slowo zapisu {m.group(1).upper()}"
+    return None
+
+
+def sql_insert_sources(definition: dict) -> dict:
+    """Zrodla wartosci wstawianych do zapytan SQL (domkniecie jak w sensitive_refs): odwolanie -> akcje SQL."""
+    try:
+        actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
+    except KeyError:
+        return {}
+    out: dict = {}
+    for name, (where, action) in actions.items():
+        if not sql_query_action(action):
+            continue
+        params = _ci(_ci(action, "inputs"), "parameters")
+        texts = [v for k, v in params.items() if _sql_query_key(k)] if isinstance(params, dict) else []
+        body = _ci(_ci(action, "inputs"), "body")
+        if body is not None:
+            texts.append(body)
+        if not texts:
+            continue
+        for ref in _dependency_closure(actions, [(canon(v), where) for v in texts]):
+            out.setdefault(ref, set()).add(name)
+    return out
+
+
+def _value_parts(action: dict) -> dict:
+    """Wartosci akcji, ktore moga trafic dalej (bez runAfter, typu i metadanych)."""
+    return {k: v for k, v in _own_body(action).items() if str(k).lower() in ("inputs", "foreach", "expression")}
+
+
+def sql_new_expr_sources_problem(definition: dict, sql_action: str, expr: str) -> str | None:
+    """Nowe wyrazenie w zapytaniu: stale w akcjach wbudowanych, z ktorych bierze wartosc, musza przejsc
+    sql_insert_problem (inaczej krok podlaczylby do zapytania stala z poleceniem SQL)."""
+    try:
+        actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
+    except KeyError:
+        return None
+    where = actions[sql_action][0] if sql_action in actions else ()
+    refs = _dependency_closure(actions, [(canon(expr), where)])
+    if ANY_REF in refs:
+        return "ma nazwe wyliczana"
+    for n, (_, a) in actions.items():
+        if str(action_type(a) or "").lower() in FLOW_SAFE_TYPES and defines(n, a) & refs:
+            bad = sql_insert_problem(_value_parts(a)) or \
+                ("wartosc to tablica albo obiekt (JSON z [ ] i \")" if structured_output(a) else None)
+            if bad:
+                return f"ustawia akcja {n}: {bad}"
+    return None
+
+
+def sql_source_hits(defs: set, sources: dict) -> list[str]:
+    """Akcje SQL, do ktorych zapytania trafia wartosc ustawiana przez zmieniana akcje."""
+    if ANY_REF in sources and defs:
+        return sorted(sources[ANY_REF])
+    return sorted({a for d in defs for a in sources.get(d, ())})
+
+
+def _sql_query_key(key) -> bool:
+    return any("query" in part for part in str(key).lower().split("/"))
+
+
+def _flow_sql_text(value) -> str | None:
+    return _flow_sql_parts(value)[0]
+
+
+def _flow_sql_exprs(value) -> list | None:
+    """Wyrazenia @{...} w zapytaniu: (wyrazenie, czy poza literalem i komentarzem SQL, czy sklejone z tekstem
+    polecenia: litera, cyfra albo -, /, * tuz przed nim, litera albo cyfra tuz po nim)."""
+    text, exprs = _flow_sql_parts(value)
+    if text is None:
+        return None
+    _, problem = _strip_sql(text)
+    if problem:
+        return None
+    kinds = _placeholder_contexts(text)
+    result = []
+    for n, (e, before, after) in enumerate(exprs):
+        kind = kinds.get(n, "?")
+        # sklejone: litera, cyfra, -, /, * albo drugie wyrazenie (}@{) tuz przed nim albo tuz po nim
+        glued = kind == "sql" and (bool(re.match(r"[\w*/}-]", before)) or bool(re.match(r"[\w*/@-]", after)))
+        result.append((e, kind, glued))
+    return sorted(result)
+
+
+def _placeholder_contexts(text: str) -> dict:
+    """Dla kazdego zzexpr<n>zz rodzaj miejsca w zapytaniu: sql (czesc polecenia), str ('...'), name ([...] albo
+    "...") albo comment (-- albo /* */). Przeniesienie wyrazenia miedzy rodzajami zmienia jego znaczenie."""
+    kinds: dict = {}
+
+    def mark(segment: str, kind: str) -> None:
+        for m in re.finditer(r"zzexpr(\d+)zz", segment):
+            kinds[int(m.group(1))] = kind
+
+    i, n = 0, len(text)
+    while i < n:
+        two, ch = text[i:i + 2], text[i]
+        if two == "--":
+            ends = [j for j in (text.find("\n", i), text.find("\r", i)) if j >= 0]
+            j = min(ends) if ends else n
+            mark(text[i:j], "comment")
+        elif two == "/*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text[j:j + 2] == "/*":
+                    depth, j = depth + 1, j + 2
+                elif text[j:j + 2] == "*/":
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            mark(text[i:j], "comment")
+        elif ch in "'[\"":
+            close = {"'": "'", "[": "]", '"': '"'}[ch]
+            j = i + 1
+            while j < n:
+                if text[j] == close:
+                    if text[j + 1:j + 2] == close:
+                        j += 2
+                        continue
+                    break
+                j += 1
+            j = min(j + 1, n)
+            mark(text[i:j], "str" if ch == "'" else "name")
+        else:
+            m = re.match(r"zzexpr(\d+)zz", text[i:])
+            if m:
+                kinds[int(m.group(1))] = "sql"
+                j = i + m.end()
+            else:
+                j = i + 1
+        i = j
+    return kinds
+
+
+def _flow_sql_parts(value, placeholder: bool = True) -> tuple[str | None, list]:
+    """Tekst SQL z wartosci flow: wyrazenia @{...} zastapione nazwami zzexpr<n>zz, jeden koncowy srednik
+    pominiety, oraz lista wyrazen (tekst, znak przed, znak po). placeholder=False: wyrazenia usuniete (tak
+    sprawdzane jest sklejanie DEL@{''}ETE). None, gdy wartosc jest calym wyrazeniem (@...) albo nie jest tekstem."""
+    exprs: list = []
+    if not isinstance(value, str):
+        return None, exprs
+    if value.startswith("@") and not value.startswith(("@{", "@@")):
+        return None, exprs
+    out, i, n = [], 0, len(value)
+    while i < n:
+        if value.startswith("@@", i):
+            out.append("@")
+            i += 2
+        elif value.startswith("@{", i):
+            depth, j, quote = 0, i + 1, False
+            while j < n:
+                c = value[j]
+                if quote:
+                    if c == "'":
+                        quote = False
+                elif c == "'":
+                    quote = True
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            if j >= n:
+                return None, exprs
+            out.append(f"zzexpr{len(exprs)}zz" if placeholder else "")
+            exprs.append((value[i:j + 1], value[i - 1:i], value[j + 1:j + 2]))
+            i = j + 1
+        else:
+            out.append(value[i])
+            i += 1
+    text = "".join(out).strip()
+    if text.endswith(";"):
+        text = text[:-1].rstrip()
+    return text, exprs
+
+
+def flow_patch_sql_check(target, ch: dict, i: int) -> dict | None:
+    """Zmiana tekstu zapytania w akcji SQL: czy stare i nowe zapytanie jest tylko odczytem. None dla innych zmian."""
+    if not sql_query_action(target):
+        return None
+    keys = [str(k).lower() for k in ch["sciezka"][i:]]
+    if keys[:1] != ["inputs"] or keys[1:2] not in (["parameters"], ["body"]):
+        return None
+    if not any(_sql_query_key(k) for k in keys[2:]) and keys[1:2] != ["body"]:
+        return None
+    old, new = _flow_sql_text(ch.get("bylo")), _flow_sql_text(ch.get("ma_byc"))
+    result_new: list = []
+    old_ro = old is not None and sql_query_problem(old, check_names=False) is None
+    new_problem = "nie da sie sprawdzic (cale wyrazenie albo nie tekst)" if new is None else \
+        sql_query_problem(new, check_names=False)
+    if new_problem is None:
+        empty = _flow_sql_parts(ch.get("ma_byc"), placeholder=False)[0]
+        new_problem = sql_query_problem(empty or "", check_names=False)
+    if new_problem is None:
+        # nowe zapytanie moze miec tylko wyrazenia ze starego, w tym samym miejscu (w literale albo poza nim)
+        old_e = {(e, o) for e, o, _ in _flow_sql_exprs(ch.get("bylo")) or []}
+        new_e = _flow_sql_exprs(ch.get("ma_byc"))
+        if new_e is None:
+            new_problem = "nie da sie ustalic polozenia wyrazen @{...}"
+        else:
+            # Wyrazenie moze wstawic dowolny tekst, wiec dozwolone sa tylko wyrazenia ze starego zapytania, w tym
+            # samym miejscu (w literale albo poza nim), i niesklejone z tekstem polecenia.
+            fresh = [(e, o) for e, o, _ in new_e if (e, o) not in old_e]
+            # nowe wyrazenie tylko w poleceniu albo w literale: w nazwie [..]/".." i w komentarzu wartosc z ] albo
+            # nowa linia zamyka nazwe albo komentarz
+            extra = [(e, o) for e, o in fresh if o not in ("sql", "str") or not _safe_sql_expr(e)]
+            result_new = sorted({e for e, _ in fresh})
+            glued = [e for e, _, g in new_e if g]
+            if glued:
+                new_problem = "wyrazenie " + glued[0][:80] + " jest sklejone z tekstem polecenia SQL"
+            elif extra:
+                new_problem = ("nowe albo przeniesione wyrazenie " + extra[0][0][:80] + " moze wstawic dowolny tekst "
+                               "SQL; dozwolone sa wyrazenia ze starego zapytania w tym samym miejscu i nowe wyrazenia "
+                               "na danych (zmienne, wyniki akcji, funkcje jak if, substring, length; literaly tylko z "
+                               "cyfr, przecinkow, nawiasow i parzystej liczby apostrofow)")
+    result = {"stare_odczyt": old_ro, "nowe_odczyt": new_problem is None, "problem": None,
+              "nowe_wyrazenia": result_new}
+    if old_ro and new_problem:
+        result["problem"] = ("zapytanie SQL bylo tylko odczytem, a nowe nie jest (" + new_problem.replace("ppcall sql: ", "") +
+                             "); zmiane zapytania na zapis robi developer")
+    return result
 
 # ---------------------------------------------------------------- wyjatek: nazwa pliku w sciezce odczytu SharePoint
 # Decyzja Michala Kaszty z 2026-11-04 (ITS-418): flow-patch moze zmienic nazwe pliku czytanego przez akcje
@@ -1443,8 +1888,37 @@ def _without_actions(definition: dict) -> dict:
     return d
 
 
+def _leaves(obj, out: list) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out.append(str(k))
+            _leaves(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _leaves(v, out)
+    elif isinstance(obj, str):
+        out.append(obj)
+    elif obj is not None:
+        out.append(json.dumps(obj))
+
+
+def _expr_view(text: str) -> str:
+    """Tekst do wyszukiwania odwolan: z zapisu JSON (canon) surowe teksty i klucze, po jednym w linii. Nowa
+    linia i tabulator przed nazwa funkcji sa wtedy zwyklymi odstepami, a nazwy z " albo \\ zostaja jak w defines()."""
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    if isinstance(value, str):
+        return value
+    parts: list = []
+    _leaves(value, parts)
+    return "\n".join(parts)
+
+
 def _refs(text: str) -> set:
     """Odwolania do zmiennych i akcji; nazwy malymi literami (Power Automate ich nie rozroznia)."""
+    text = _expr_view(text)
     found = set()
     for kind, name in REF_RE.findall(text):
         found.add(("var" if kind.lower() == "variables" else "act", name.replace("''", "'").lower()))
@@ -1466,6 +1940,43 @@ def _routing_values(obj, out: list) -> None:
             _routing_values(v, out)
 
 
+# item() w petli (1.4.1, ITS-418, decyzja Michala Kaszty z 2026-11-09): petla jest zrodlem adresu tylko wtedy, gdy
+# wartosc, od ktorej zalezy adres, zawiera item(), items('<petla>') albo iterationIndexes('<petla>').
+_ITEMS_RE = re.compile(r"\bitems\s*\(\s*'((?:[^']|'')*)'\s*\)", re.I)
+_ITERATION_RE = re.compile(r"\biterationIndexes\s*\(\s*'((?:[^']|'')*)'\s*\)", re.I)
+_ITERATION_DYNAMIC_RE = re.compile(r"\biterationIndexes\s*\((?!\s*')", re.I)
+_ITEM_RE = re.compile(r"\bitem\s*\(\s*\)", re.I)
+# Akcje, w ktorych item() poza polem 'from' oznacza biezacy element ich wlasnej tablicy, a nie petli.
+IMPLICIT_ITEM_TYPES = {"select", "query", "table"}
+CONTROL_TYPES = {"if", "switch", "until", "foreach"}
+
+
+def _expr_refs(text: str) -> set:
+    """Odwolania po nazwie bez items('<petla>') (te obsluguje _loop_refs, bez rozwijania calej petli)."""
+    text = _expr_view(text)
+    refs = _refs(_ITEMS_RE.sub(" ", text))
+    if _ITERATION_DYNAMIC_RE.search(text):
+        refs.add(ANY_REF)
+    return refs
+
+
+def _loop_refs(text: str, where: tuple, action: dict | None, by_name: dict) -> set:
+    """Petle, z ktorych element bierze wartosc: items('X') i iterationIndexes('X') wprost, item() to
+    najblizsza petla foreach obejmujaca akcje, w ktorej stoi wyrazenie."""
+    text = _expr_view(text)
+    loops = {m.replace("''", "'").lower() for m in _ITEMS_RE.findall(text) + _ITERATION_RE.findall(text)}
+    item_text = text
+    if action is not None and str(action_type(action) or "").lower() in IMPLICIT_ITEM_TYPES:
+        item_text = _expr_view(canon(_ci(_ci(action, "inputs"), "from")))
+    if _ITEM_RE.search(item_text):
+        for part in reversed(where):
+            parent = by_name.get(part[0].lower())
+            if parent is not None and str(action_type(parent) or "").lower() == "foreach":
+                loops.add(part[0].lower())
+                break
+    return loops
+
+
 def sensitive_refs(definition: dict) -> set:
     """Zmienne i akcje, z ktorych akcje wysylajace (Http, konektory i inne spoza FLOW_SAFE_TYPES) biora adres,
     naglowki albo uwierzytelnienie. Zmiana ich wartosci przekierowalaby istniejace wywolanie."""
@@ -1473,8 +1984,7 @@ def sensitive_refs(definition: dict) -> set:
         actions, _ = flatten_actions(get_at(definition, ["properties", "definition", "actions"]))
     except KeyError:
         return set()
-    by_name = {n.lower(): a for n, (_, a) in actions.items()}
-    found: set = set()
+    seeds = []
     for _, (where, action) in actions.items():
         if str(action_type(action) or "").lower() in FLOW_SAFE_TYPES:
             continue
@@ -1489,37 +1999,70 @@ def sensitive_refs(definition: dict) -> set:
             params = _ci(_ci(own, "inputs"), "parameters")
             if isinstance(params, dict):
                 values.extend(v for k, v in params.items() if str(k).lower() != "body")
-        for v in values:
-            found |= _refs(canon(v))
-        # item() w petli: zrodlem jest klucz foreach petli, w ktorej lezy akcja.
-        for part in where:
-            parent = by_name.get(part[0].lower())
-            if parent and str(action_type(parent) or "").lower() in ("foreach", "until"):
-                found.add(("act", part[0].lower()))
-    # Domkniecie: skad biora wartosci akcje i zmienne, od ktorych zalezy adres (Compose -> Select -> Http).
+        if sql_query_action(action):
+            # akcja SQL: serwer i baza (wszystko poza tekstem zapytania) wskazuja cel
+            params = _ci(_ci(own, "inputs"), "parameters")
+            if isinstance(params, dict):
+                values.extend(v for k, v in params.items() if not _sql_query_key(k))
+        seeds.extend((canon(v), where) for v in values)  # akcja wysylajaca: item() to element petli, w ktorej lezy
+    return _dependency_closure(actions, seeds)
+
+
+def _dependency_closure(actions: dict, seeds: list) -> set:
+    """Odwolania z tekstow seeds (tekst, polozenie) i wszystko, z czego biora wartosc (domkniecie)."""
+    by_name = {n.lower(): a for n, (_, a) in actions.items()}
+    where_of = {n.lower(): w for n, (w, _) in actions.items()}
     # result('<zakres>') zwraca wyniki akcji wewnatrz zakresu: zakres zalezy od wszystkich swoich akcji
     nested: dict[str, list[str]] = {}
     for n, (where, _) in actions.items():
         for part in where:
             nested.setdefault(part[0].lower(), []).append(n.lower())
-    queue = list(found)
+    found: set = set()
+    queued: set = set()
+    queue: list = []
+
+    def push(ref) -> None:
+        found.add(("act", ref[1]) if ref[0] == "loop" else ref)
+        if ref not in queued:
+            queued.add(ref)
+            queue.append(ref)
+
+    def scan(text: str, where: tuple, action: dict | None) -> None:
+        for ref in _expr_refs(text):
+            push(ref)
+        for loop in _loop_refs(text, where, action, by_name):
+            push(("loop", loop))
+
+    def scan_source(name: str) -> None:
+        """Tresc zrodla i wyrazenia wszystkich obejmujacych je warunkow i petli (If, Switch, Until, Foreach):
+        warunek decyduje, czy i ktora wartosc zrodlo ustawi."""
+        scan(canon(_own_body(by_name[name])), where_of[name], by_name[name])
+        for part in where_of[name]:
+            parent = by_name.get(part[0].lower())
+            if parent is not None and str(action_type(parent) or "").lower() in CONTROL_TYPES:
+                push(("loop", part[0].lower()))
+
+    for text, where in seeds:
+        scan(text, where, None)
+    # Domkniecie: skad biora wartosci akcje i zmienne, od ktorych zalezy adres (Compose -> Select -> Http).
     while queue:
         ref = queue.pop()
         if ref == ANY_REF:
             continue
         kind, name = ref
+        if kind == "loop":
+            # petla dodana przez item(): zrodlem jest tylko jej wlasna tresc (foreach), nie akcje w srodku
+            if name in by_name:
+                scan_source(name)
+            continue
         if kind == "act":
             for inner in nested.get(name, []):
-                if ("act", inner) not in found:
-                    found.add(("act", inner))
-                    queue.append(("act", inner))
-            sources = [by_name[name]] if name in by_name else []
+                push(("act", inner))
+            sources = [name] if name in by_name else []
         else:
-            sources = [a for n, a in by_name.items() if ref in defines(n, a)]
+            sources = [n for n, a in by_name.items() if ref in defines(n, a)]
         for src in sources:
-            for new in _refs(canon(_own_body(src))) - found:
-                found.add(new)
-                queue.append(new)
+            scan_source(src)
     return found
 
 
@@ -1597,7 +2140,8 @@ def flow_definition_diff(old: dict, new: dict) -> tuple[list[dict], list[str]]:
                 "zakres": scope_label(scope), "klucze": sorted({"/".join(p[:2]) for p in paths})[:8],
                 "klucze_zakazane": _forbidden(keys),
                 "definiuje": defines(name, action) | defines(name, old_action), "podglad": preview,
-                "odczyt_hasel": len(SECRET_REF_RE.findall(text)) > len(SECRET_REF_RE.findall(old_text)),
+                "odczyt_hasel": len(SECRET_REF_RE.findall(_expr_view(text))) >
+                len(SECRET_REF_RE.findall(_expr_view(old_text))),
                 "maskowane": text.count(MASKED) > old_text.count(MASKED)}
         if old_scope != scope:
             item["zmiana"] = "zmieniona i przeniesiona" if paths else "przeniesiona"
@@ -1634,7 +2178,18 @@ def flow_definition_live_problems(step: dict, workflow: dict, new: dict,
                     f"kroku (jest {len(changes)})")
     if not restoring:
         sensitive = sensitive_refs(old) | sensitive_refs(new)
+        sql_sources = sql_insert_sources(old)
+        for ref, names in sql_insert_sources(new).items():
+            sql_sources.setdefault(ref, set()).update(names)
+        new_actions, _ = flatten_actions(get_at(new, ["properties", "definition", "actions"]))
         for c in changes:
+            c["sql"] = sql_source_hits(c["definiuje"], sql_sources)
+            if c["sql"] and c["zmiana"] != "usunieta" and c["akcja"] in new_actions:
+                new_action = new_actions[c["akcja"]][1]
+                bad = sql_insert_problem(_value_parts(new_action)) or \
+                    ("wartosc to tablica albo obiekt (JSON z [ ] i \")" if structured_output(new_action) else None)
+                if bad:
+                    errs.append(f"{c['akcja']}: zmienia dane wstawiane do zapytania SQL ({', '.join(c['sql'])}): {bad}")
             hit = sensitive_hit(c["definiuje"], sensitive)
             if hit:
                 errs.append(f"{c['akcja']}: akcja ustawia {', '.join(hit)}, z czego akcja wysylajaca bierze adres, "

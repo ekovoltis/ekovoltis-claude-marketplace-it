@@ -787,6 +787,22 @@ def flow_patch_preview(step: dict, plan_text: str = "") -> list[str]:
     for ch in step["zmiany"]:
         out(f"  - {C.flow_patch_label(ch['sciezka'])}\n      sciezka: {' / '.join(ch['sciezka'])}"
             f"\n      bylo:    {C.value_text(ch['bylo'], 4000)}\n      ma byc:  {C.value_text(ch['ma_byc'], 4000)}")
+        sql, sql_hits = None, []
+        if definition is not None:
+            i, _ = C._split_flow_patch_path(ch["sciezka"])
+            try:
+                target = C.get_at(definition, ch["sciezka"][:i])
+                sql = C.flow_patch_sql_check(target, ch, i)
+                sql_hits = C.sql_source_hits(C.defines(ch["sciezka"][i - 1], target), C.sql_insert_sources(definition))
+            except KeyError:
+                sql = None
+        if sql_hits:
+            out(f"      [zmienia dane wstawiane do zapytania SQL: {', '.join(sql_hits)}]")
+        if sql:
+            yes = {True: "tak", False: "nie"}
+            out(f"      ZAPYTANIE SQL: stare tylko odczyt: {yes[sql['stare_odczyt']]}, "
+                f"nowe tylko odczyt: {yes[sql['nowe_odczyt']]}"
+                + ("" if sql["stare_odczyt"] else " (zapytanie juz zmienia dane: sprawdz zmiane szczegolnie uwaznie)"))
     if not errs:
         out("  Krok wycofania (nowy plan z nowa akceptacja, gdy bedzie potrzebny):")
         out("  " + json.dumps(reverse_step(step), ensure_ascii=False))
@@ -1046,6 +1062,8 @@ def describe_changes(changes: list[dict]) -> list[str]:
             line += f", wczesniej w {c['z_zakresu'] or 'glowny zakres'}"
         if c.get("klucze"):
             line += f"; klucze: {', '.join(c['klucze'])}"
+        if c.get("sql"):
+            line += f" [zmienia dane wstawiane do zapytania SQL: {', '.join(c['sql'])}]"
         if c.get("podglad"):
             line += f"\n      tresc: {c['podglad']}"
         lines.append(line)
