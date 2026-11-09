@@ -23,6 +23,94 @@ import common as C  # noqa: E402
 
 TOKEN_RE = re.compile(r"get-access-token|Get-AzAccessToken|Get-MsalToken|acquire_token|"
                       r"az\s+login\b|Connect-(AzAccount|MgGraph|PnPOnline)|\bmsal\b", re.I)
+# Klienci SQL z pominieciem ppcall sql (Fabric SQL czyta tylko ppcall sql, 1.4.0): program (takze pod
+# nakladka) i polecenia PowerShell z modulow SqlServer i dbatools.
+SQL_CLIENT_RE = re.compile(r"(?<![\w.-])(sqlcmd|bcp|osql|isql|usql|mssql-cli|sqlpackage)(\.exe)?(?![\w-])", re.I)
+# Polecenia, ktore tylko wypisuja albo szukaja tekstu (echo sqlcmd, grep bcp plik) nie sa klientem SQL.
+TEXT_PROGS = {"echo", "printf", "grep", "egrep", "rg", "findstr", "select-string", "sls", "cat", "type", "less",
+              "head", "tail", "ls", "dir", "write-output", "write-host", "man", "which", "where", "get-command"}
+SQL_CMDLET_RE = re.compile(r"\b(Invoke|Read|Write|Get|Set|New|Remove|Add|Backup|Restore|Export|Import|Copy)-"
+                           r"(Sql|Dba)[A-Za-z]\w*", re.I)
+# Jedyne dopuszczone przekierowania w poleceniu ppcall (od znaku > po koniec slowa): 2>&1, >&2, >/dev/null,
+# 2>$null, > nul. Cel w cudzyslowie, inne odstepy niz spacja i kazda inna forma sa odrzucane.
+SAFE_REDIRECT_RE = {"bash": re.compile(r">(&[12]|[ ]?/dev/null)(?=[ ]|$)"),
+                    "powershell": re.compile(r">(&[12]|[ ]?\$(null|NULL|Null))(?=[ ]|$)")}
+
+
+SMART_QUOTES = "‘’‚‛“”„"
+
+
+def ppcall_shell_problem(seg: str, dialect: str, strict: bool) -> str | None:
+    """Polecenie ppcall jest dopuszczane bez pytania, wiec nie moze uruchamiac nic poza ppcall. Dopuszczane sa
+    tylko argumenty, ktore straznik czyta tak samo jak powloka: jedna linia, zwykle cudzyslowy, bez podstawien
+    ($(...), `...`, ${...}, <(...)), bez $'...', komentarzy, separatorow i przekierowania do pliku (zapis tylko
+    przez --out). W PowerShell bez $ i nawiasow poza '...'. strict (ppcall sql): takze bez zmiennych ($X)."""
+    ps = dialect == "powershell"
+    use = "Adres i zapytanie podaj w pojedynczym cudzyslowie '...'."
+    if "\n" in seg or "\r" in seg:
+        return "ppcall: polecenie w jednej linii (zapytanie SQL tez w jednej linii)."
+    if any(c.isspace() and c != " " for c in seg) or "\0" in seg:
+        return "ppcall: w poleceniu dozwolona jest tylko zwykla spacja (bez tabulatorow i innych odstepow)."
+    if any(c in SMART_QUOTES for c in seg):
+        return "ppcall: typograficzne cudzyslowy sa niedozwolone, uzyj zwyklych ' i \"."
+    if ps and re.search(r"@['\"]|--%", seg):
+        return "ppcall: bez here-stringow @'...'@ i --% w PowerShell. " + use
+    i, n, quote = 0, len(seg), None
+    first = len(seg) - len(seg.lstrip())
+    while i < n:
+        ch, nxt = seg[i], seg[i + 1:i + 2]
+        prev = seg[i - 1] if i else " "
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if not ps and ch == "\\":
+            if quote is None:
+                return "ppcall: bez znaku \\ poza cudzyslowem. " + use
+            i += 2
+            continue
+        if ch == "`":
+            return "ppcall: bez podstawien polecen i znakow ucieczki (`) w argumentach. " + use
+        if ch == "$":
+            if nxt in ("(", "{"):
+                return "ppcall: bez podstawien $(...) i ${...} w argumentach. " + use
+            if ps:
+                return "ppcall w PowerShell: bez zmiennych i wyrazen z $ poza '...'. " + use
+            if quote is None and nxt in ("'", '"'):
+                return "ppcall: bez cudzyslowow $'...' i $\"...\". " + use
+            if strict:
+                return "ppcall sql: bez $ poza pojedynczym cudzyslowem. " + use
+        if quote is None:
+            if ch == "#" and prev.isspace():
+                return "ppcall: bez komentarzy (#) w poleceniu."
+            if ps and ch in "()":
+                return "ppcall w PowerShell: bez nawiasow poza cudzyslowem. " + use
+            if ch in "<>" and nxt == "(":
+                return "ppcall: bez podstawien <(...) i >(...)."
+            if ch in ";|":
+                return "ppcall: jedno polecenie bez separatorow."
+            if ch == "&" and not (nxt == ">" or (ps and i == first)):
+                return "ppcall: bez & w poleceniu poza cudzyslowem."
+            if not ps and ch in "*?[{":
+                return "ppcall: bez wzorcow i nawiasow klamrowych poza cudzyslowem. " + use
+            if ch in "<>":
+                m = SAFE_REDIRECT_RE["powershell" if ps else "bash"].match(seg, i) if ch == ">" else None
+                if not m:
+                    return ("ppcall: przekierowanie do pliku jest zablokowane (dozwolone 2>&1, >&2, w bash >/dev/null, w PowerShell 2>$null). "
+                            "Wynik zapisuj przez --out <katalog zgloszenia>/plik.")
+                i = m.end()
+                continue
+            if ch in "'\"":
+                quote = ch
+        elif ch == '"':
+            quote = None
+        i += 1
+    if quote:
+        return "ppcall: niezamkniety cudzyslow."
+    return None
+
+
 PS_MUTATION_RE = re.compile(
     r"\b(Set|New|Remove|Update|Start|Stop|Restart|Enable|Disable|Add|Grant|Revoke|Clear|Reset|Publish|"
     r"Import|Invoke|Register|Unregister|Move|Rename|Restore|Approve|Deny|Suspend|Resume)-"
@@ -437,6 +525,8 @@ def split_segments(cmd: str, dialect: str = "bash") -> list[str]:
             buf.append(ch); buf.append(cmd[i + 1]); i += 1
         elif ch in ("'", '"'):
             quote = ch; buf.append(ch)
+        elif ch == "&" and ((buf and buf[-1] in "<>") or cmd[i + 1:i + 2] == ">"):
+            buf.append(ch)  # przekierowanie (>&2, 2>&1, &>plik), nie separator
         elif ch in ";|&\n":
             segs.append("".join(buf)); buf = []
             if i + 1 < len(cmd) and cmd[i + 1] == ch and ch in "|&":
@@ -513,6 +603,9 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
     if is_ppcall(tokens):
         args = ppcall_args(tokens)
         sub = args[0] if args else ""
+        problem = ppcall_shell_problem(s, dialect, strict=sub == "sql")
+        if problem:
+            return "deny", problem
         if sub == "exec":
             if len(args) != 3 or not args[2].isdigit():
                 return "deny", "Uzycie: ppcall exec <ID> <nr-kroku>"
@@ -534,6 +627,22 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
                          "zmianie stanu flow przywroci kopie. Zmiany akcji pokazal ppcall plan-check.")
             return "ask", (f"ZMIANA W SRODOWISKU. Zgloszenie {args[1]}, krok {args[2]}: {step['opis']} | "
                            f"{C.step_summary(step)}.{extra} Zatwierdz tylko jesli to dokladnie zaakceptowany krok.")
+        if sub == "sql":
+            targets = out_targets(args)
+            if len(args) < 4 or not targets:
+                return "deny", ('Uzycie: ppcall sql <serwer> <baza> "<SELECT ...>" --out <katalog zgloszenia>/plik.json '
+                                "[--max-wierszy N] [--limit-czasu S]")
+            problem = C.sql_endpoint_problem(C.load_config(), args[1], args[2]) or C.sql_query_problem(args[3], args[2])
+            if problem:
+                return "deny", problem
+            for target in targets:
+                problem = C.out_path_problem(cwd, target) or C.out_path_problem(cwd, C.sql_out_path(target))
+                if problem:
+                    return "deny", problem
+                decision, reason = guard_write(str(Path(cwd) / C.sql_out_path(target)), cwd, active)
+                if decision:
+                    return decision, reason
+            return "allow", "pp-support: odczyt z Fabric SQL (jedno polecenie SELECT, wynik do pliku zgloszenia)"
         if sub in ("get", "runs"):
             for target in out_targets(args):
                 problem = C.out_path_problem(cwd, target)
@@ -560,6 +669,9 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
     if TOKEN_RE.search(s):
         return "deny", ("Pobieranie tokenow i logowanie wykonuje czlowiek albo ppcall. "
                         "Do odczytu uzyj: ppcall get <url>.")
+    if SQL_CMDLET_RE.search(s) or (SQL_CLIENT_RE.search(s) and _prog((_unwrap(tokens)[0] or [''])[0]) not in TEXT_PROGS):
+        return "deny", ("Zapytania SQL do hurtowni Fabric tylko przez ppcall sql "
+                        '(ppcall sql <serwer> <baza> "<SELECT ...>" --out <katalog zgloszenia>/plik.json).')
     if C.CLOUD_HOST_RE.search(s):
         return "deny", ("Ruch do uslug Microsoft tylko przez ppcall (odczyt: ppcall get <url>; "
                         "zmiana: krok planu i ppcall exec).")
@@ -572,6 +684,9 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
     if prog == "pac":
         words = tuple(t.lower() for t in tokens[1:] if not t.startswith("-"))
         if any(words[:len(r)] == r for r in PAC_READ) or not words or "--version" in tokens:
+            # Odczyt bez pytania tylko przy prostej skladni (bez podstawien i przekierowan), jak przy ppcall.
+            if ppcall_shell_problem(s, dialect, strict=False):
+                return None, ""
             return "allow", "pp-support: pac w trybie odczytu"
         return "deny", ("pac: dozwolony tylko odczyt. Zmiane opisz w planie naprawy jako krok typu cli "
                         "i wykonaj przez ppcall exec po akceptacji pracownika.")
@@ -586,6 +701,8 @@ def classify_segment(seg: str, cwd: str, dialect: str = "bash", active: bool = T
         if words[:2] == ["keyvault", "secret"] and words[-1:] != ["list"]:
             return "deny", "Odczyt wartosci sekretow jest zabroniony."
         if "--version" in tokens or (words and AZ_READ_LAST.match(words[-1])):
+            if ppcall_shell_problem(s, dialect, strict=False):
+                return None, ""
             return "allow", "pp-support: az w trybie odczytu"
         return "deny", ("az: dozwolony tylko odczyt (list/show). Zmiane opisz w planie naprawy "
                         "i wykonaj przez ppcall exec po akceptacji pracownika.")

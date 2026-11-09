@@ -11,6 +11,8 @@ Plan:        ppcall plan-new <ID> | plan-check <ID> | status <ID>
 Wykonanie:   ppcall exec <ID> <nr-kroku>     (tylko po akceptacji czlowieka)
 Odwolanie:   ppcall revoke <ID>
 Konfig:      ppcall konfiguracja   (albo config; tylko odczyt)
+SQL Fabric:  ppcall sql <serwer> <baza> "<SELECT ...>" --out <katalog zgloszenia>/plik.json [--max-wierszy N]
+             (tylko odczyt, endpointy z fabric_sql_endpoints, konto Azure CLI)
 Porownanie:  ppcall flow-diff <ID> <adres Dataverse> <workflowid> <plik sprzed zmiany>   (tylko odczyt)
 
 Tokeny sa pobierane wewnatrz procesu i nigdy nie sa wypisywane.
@@ -19,10 +21,13 @@ from __future__ import annotations
 
 import base64
 import copy
+import datetime
+import decimal
 import json
 import os
 import shutil
 import stat
+import struct
 import re
 import subprocess
 import sys
@@ -601,6 +606,7 @@ def cmd_dostepy(_args: list[str]) -> None:
     for ws in cfg.get("fabric_workspace_ids") or []:
         probe("Fabric", f"elementy obszaru {ws}", f"https://api.fabric.microsoft.com/v1/workspaces/{ws}/items",
               "Brak roli w tym obszarze roboczym")
+    probe_sql(add)
 
     width = max(len(r["test"]) for r in results) + 2
     out(f"{'':2}{'OBSZAR':16}{'TEST':{width}}WYNIK")
@@ -1353,11 +1359,193 @@ def cmd_flow_diff(args: list[str]) -> None:
     out(f"Zapisano {target}")
 
 
+# ---------------------------------------------------------------- Fabric SQL (tylko odczyt)
+
+SQL_ACCESS_SQL = "SELECT TOP 1 TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES"
+
+
+def _odbc():
+    """Modul pyodbc (testy podmieniaja te funkcje)."""
+    try:
+        import pyodbc  # noqa: PLC0415
+    except ImportError:
+        raise RuntimeError("Brak modulu pyodbc. Zainstaluj: python -m pip install pyodbc "
+                           f"oraz sterownik {C.SQL_DRIVER} (Microsoft).")
+    return pyodbc
+
+
+def sql_driver_problem() -> str | None:
+    try:
+        odbc = _odbc()
+    except RuntimeError as e:
+        return str(e)
+    try:
+        drivers = list(odbc.drivers())
+    except Exception:  # noqa: BLE001
+        drivers = []
+    if C.SQL_DRIVER not in drivers:
+        return (f"Brak sterownika {C.SQL_DRIVER}. Zainstaluj go ze strony Microsoft "
+                "(Download ODBC Driver for SQL Server); zainstalowane: " + (", ".join(drivers) or "brak"))
+    return None
+
+
+def _sql_value(v):
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, decimal.Decimal):
+        return str(v)
+    if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
+        return v.isoformat()
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return "0x" + bytes(v).hex()
+    return str(v)
+
+
+def _sql_error(e: Exception, secrets: list[str]) -> str:
+    text = " ".join(str(a) for a in getattr(e, "args", ()) if a) or str(e) or type(e).__name__
+    for s in secrets:
+        if s:
+            text = text.replace(s, "***")
+    text = C.redact_text(text)
+    if re.search(r"18456|Login failed|token|unauthori|permission|denied", text, re.I):
+        text += (f" | ppcall laczy sie kontem {az_account()} (Azure CLI), nie kontem dyzurnego. To konto potrzebuje "
+                 "roli Viewer w obszarze roboczym hurtowni i uprawnienia ReadData (albo db_datareader) na hurtowni.")
+    return text
+
+
+def run_sql(server: str, db: str, query: str, max_rows: int, timeout_s: int) -> tuple[list[str], list[list], bool]:
+    """Wykonuje sprawdzone zapytanie w transakcji wycofywanej po odczycie. Zwraca (kolumny, wiersze, obcieto)."""
+    problem = C.sql_endpoint_problem(C.load_config(), server, db) or C.sql_query_problem(query, db)
+    if problem:
+        raise RuntimeError(problem)
+    problem = sql_driver_problem()
+    if problem:
+        raise RuntimeError(problem)
+    odbc = _odbc()
+    token = get_token(C.SQL_RESOURCE)
+    raw = token.encode("utf-16-le")
+    conn_str = (f"Driver={{{C.SQL_DRIVER}}};Server=tcp:{server.strip().lower()},1433;Database={db.strip()};"
+                "Encrypt=yes;TrustServerCertificate=no;ApplicationIntent=ReadOnly;Connection Timeout=30")
+    conn = None
+    try:
+        # SQL_COPT_SS_ACCESS_TOKEN (1256): token w strukturze ODBC, nie w tekscie polaczenia.
+        conn = odbc.connect(conn_str, attrs_before={1256: struct.pack("<I", len(raw)) + raw},
+                            autocommit=False, timeout=30)
+        conn.timeout = timeout_s
+        cur = conn.cursor()
+        # Bez autocommit sterownik wlacza IMPLICIT_TRANSACTIONS (bit 2 w @@OPTIONS): odczyt jest w transakcji,
+        # ktora finally wycofuje. Gdy serwer tego trybu nie ma, odczyt nie jest wykonywany.
+        cur.execute("SELECT @@OPTIONS")
+        options = cur.fetchone()
+        if not options or not int(options[0]) & 2:
+            raise RuntimeError("Fabric SQL: sesja bez trybu transakcji niejawnych (IMPLICIT_TRANSACTIONS), "
+                               "wycofanie odczytu nie jest gwarantowane. Zapytanie nie zostalo wykonane.")
+        cur.execute(query)
+        if cur.description is None:
+            raise RuntimeError("Zapytanie nie zwrocilo wyniku (oczekiwany SELECT).")
+        columns = [str(d[0]) for d in cur.description]
+        fetched = cur.fetchmany(max_rows + 1)
+        rows = [[_sql_value(v) for v in row] for row in fetched[:max_rows]]
+        return columns, rows, len(fetched) > max_rows
+    except RuntimeError:
+        raise
+    except Exception as e:  # noqa: BLE001  bledy sterownika: komunikat bez tokenu
+        raise RuntimeError("Fabric SQL: " + _sql_error(e, [token])) from None
+    finally:
+        del token, raw
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def cmd_sql(args: list[str]) -> None:
+    usage = ('Uzycie: ppcall sql <serwer> <baza> "<SELECT ...>" --out <katalog zgloszenia>/plik.json '
+             f"[--max-wierszy N (domyslnie {C.SQL_MAX_ROWS})] [--limit-czasu S (domyslnie {C.SQL_TIMEOUT_S})]")
+    if len(args) < 3:
+        fail(usage)
+    server, db, query = args[0], args[1], args[2]
+    out_file, max_rows, timeout_s = None, C.SQL_MAX_ROWS, C.SQL_TIMEOUT_S
+    rest = args[3:]
+    try:
+        while rest:
+            flag = rest.pop(0)
+            if flag == "--out" and rest:
+                out_file = rest.pop(0)
+            elif flag == "--max-wierszy" and rest:
+                max_rows = int(rest.pop(0))
+            elif flag == "--limit-czasu" and rest:
+                timeout_s = int(rest.pop(0))
+            else:
+                fail(f"Nieznany parametr {flag}. {usage}")
+    except ValueError:
+        fail(usage)
+    if not 1 <= max_rows <= C.SQL_MAX_ROWS_LIMIT:
+        fail(f"--max-wierszy: od 1 do {C.SQL_MAX_ROWS_LIMIT}.")
+    if not 1 <= timeout_s <= C.SQL_TIMEOUT_LIMIT_S:
+        fail(f"--limit-czasu: od 1 do {C.SQL_TIMEOUT_LIMIT_S} s.")
+    if not out_file:
+        fail("ppcall sql zapisuje wynik tylko do pliku: podaj --out <katalog zgloszenia>/plik.json. " + usage)
+    if not out_file.lower().endswith(".json"):
+        fail("--out: plik wyniku ppcall sql ma rozszerzenie .json.")
+    target = C.sql_out_path(out_file)
+    problem = (C.out_path_problem(Path.cwd(), out_file) or C.out_path_problem(Path.cwd(), target)
+               or C.sql_endpoint_problem(C.load_config(), server, db) or C.sql_query_problem(query, db))
+    if problem:
+        C.audit({"typ": "odmowa-sql", "serwer": server, "baza": db, "zapytanie": query, "powod": problem})
+        fail(problem, 3)
+    try:
+        columns, rows, truncated = run_sql(server, db, query, max_rows, timeout_s)
+    except RuntimeError as e:
+        C.audit({"typ": "sql", "serwer": server, "baza": db, "zapytanie": query, "wynik": "blad"})
+        fail(str(e))
+    C.audit({"typ": "sql", "serwer": server, "baza": db, "zapytanie": query, "wiersze": len(rows),
+             "obcieto": truncated})
+    result = {"serwer": server.strip().lower(), "baza": db.strip(), "zapytanie": query,
+              "czas": C.now().isoformat(), "konto": az_account(), "kolumny": columns,
+              "liczba_wierszy": len(rows), "obcieto": truncated, "wiersze": rows}
+    Path(target).write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    out(f"Wierszy: {len(rows)}" + (f" (obcieto do {max_rows}, zawez zapytanie albo zwieksz --max-wierszy)"
+                                   if truncated else ""))
+    out("Kolumny: " + ", ".join(columns))
+    for row in rows[:3]:
+        out("  " + " | ".join(("" if v is None else str(v))[:40] for v in row))
+    out(f"Zapisano do {target} (dane osobowe: usun plik po zamknieciu zgloszenia)")
+
+
+def probe_sql(add) -> None:
+    """Test dostepu do kazdego endpointu SQL Fabric z ustawien (sprawdz-dostepy)."""
+    endpoints = C.sql_endpoints(C.load_config())
+    if not endpoints:
+        add("Fabric SQL", "endpointy SQL", False, "nie skonfigurowano fabric_sql_endpoints",
+            "Uzupelnij fabric_sql_endpoints w ustawieniach pluginu (<serwer>/<baza>)")
+        return
+    problem = sql_driver_problem()
+    add("Fabric SQL", "sterownik ODBC", problem is None, problem or C.SQL_DRIVER,
+        "" if problem is None else "Bez sterownika ppcall sql nie dziala")
+    if problem:
+        return
+    for server, db in endpoints:
+        try:
+            _, rows, _ = run_sql(server, db, SQL_ACCESS_SQL, 1, 60)
+            add("Fabric SQL", f"SELECT TOP 1 {db}", True,
+                f"konto {az_account()}: " + ("widzi tabele" if rows else "polaczenie dziala, brak widocznych tabel"),
+                "" if rows else "Konto bez ReadData na tabelach hurtowni")
+        except RuntimeError as e:
+            add("Fabric SQL", f"SELECT TOP 1 {db}", False, str(e)[:400],
+                "Rola Viewer w obszarze roboczym i ReadData na hurtowni dla konta Azure CLI")
+
+
 COMMANDS = {
     "get": cmd_get, "dostepy": cmd_dostepy, "rejestr": cmd_rejestr,
     "plan-new": cmd_plan_new, "plan-check": cmd_plan_check, "status": cmd_status,
     "exec": cmd_exec, "revoke": cmd_revoke, "config": cmd_config, "konfiguracja": cmd_config, "flow-diff": cmd_flow_diff, "runs": cmd_runs,
-    "verify": cmd_verify,
+    "verify": cmd_verify, "sql": cmd_sql,
 }
 
 if __name__ == "__main__":

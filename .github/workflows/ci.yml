@@ -34,7 +34,8 @@ jobs:
       matrix:
         include:
           # 3.9 to minimum deklarowane w README pluginu
-          - { os: ubuntu-latest, python: "3.9" }
+          # ubuntu-latest (26.04) nie ma Pythona 3.9 w setup-python
+          - { os: ubuntu-24.04, python: "3.9" }
           - { os: ubuntu-latest, python: "3.13" }
           # dyzurni pracuja na Windows: Git Bash, sciezki C:\ i narzedzie PowerShell
           - { os: windows-latest, python: "3.13" }

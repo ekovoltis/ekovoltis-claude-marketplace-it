@@ -2331,6 +2331,293 @@ try:
 finally:
     P.C.now = real_now
 
+print("37. 1.4.0: ppcall sql (tylko odczyt z Fabric SQL, ITS-426)")
+P = importlib.reload(P)
+SQLSRV = "ezpoaao4s3guzlluryza2wjh6y-pxnazkwsqg5etc62asdz35n22u.datawarehouse.fabric.microsoft.com"
+SQLTOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOi.sqltajny.podpis"
+SQL_ITS426 = ("SELECT * FROM dbo.iris_zuzycie_rozbicie WHERE ppe = '590556731701300006' "
+              "AND data >= '2026-01-01' AND data < '2026-02-01'")
+cfg = C.load_config()
+cfg["fabric_sql_endpoints"] = [f"{SQLSRV}/ekovoltis"]
+C.save_config(cfg)
+(WORK / "zgloszenia/ITS-426").mkdir(parents=True, exist_ok=True)
+
+
+class FakeCursor:
+    def __init__(self, conn):
+        self.conn, self.description, self.rows = conn, None, []
+
+    def execute(self, q):
+        self.conn.log.append(("execute", q))
+        if q == "SELECT @@OPTIONS":
+            self.description, self.rows = [("",)], [(self.conn.options,)]
+            return
+        if self.conn.fail:
+            raise Exception("[28000] Login failed for user '<token-identified principal>'. " + self.conn.fail)
+        self.description = [("ppe",), ("data",), ("wartosc",)]
+        import datetime as _d, decimal as _m
+        self.rows = [("590556731701300006", _d.date(2026, 1, d), _m.Decimal("1.250")) for d in range(1, 8)]
+
+    def fetchmany(self, n):
+        return self.rows[:n]
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+
+class FakeConn:
+    def __init__(self, fail=""):
+        self.log, self.fail, self.timeout, self.options = [], fail, None, FAKE_OPTIONS["v"]
+
+    def cursor(self):
+        return FakeCursor(self)
+
+    def rollback(self):
+        self.log.append(("rollback",))
+
+    def close(self):
+        self.log.append(("close",))
+
+
+class FakeOdbc:
+    def __init__(self, drivers=("ODBC Driver 18 for SQL Server",), fail=""):
+        self._drivers, self.fail, self.connects = list(drivers), fail, []
+
+    def drivers(self):
+        return self._drivers
+
+    def connect(self, conn_str, attrs_before=None, autocommit=True, timeout=0):
+        conn = FakeConn(self.fail)
+        self.connects.append({"conn_str": conn_str, "attrs": attrs_before, "autocommit": autocommit, "conn": conn})
+        return conn
+
+
+FAKE_OPTIONS = {"v": 2 | 32}
+ODBC = FakeOdbc()
+P._odbc = lambda: ODBC
+P.get_token = lambda resource: (SQLTOKEN if resource == C.SQL_RESOURCE else "inny")
+P.az_account = lambda: "e2vitservice@ekovoltis.pl"
+
+
+def sql_run(*args):
+    buf_out, buf_err = io.StringIO(), io.StringIO()
+    code = 0
+    with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+        try:
+            P.cmd_sql(list(args))
+        except SystemExit as e:
+            code = e.code
+    return code, buf_out.getvalue() + buf_err.getvalue()
+
+
+code, text = sql_run(SQLSRV, "ekovoltis", SQL_ITS426, "--out", "zgloszenia/ITS-426/zuzycie.json")
+expect("sql: zapytanie ITS-426 wykonane", code, 0)
+res_file = WORK / "zgloszenia/ITS-426/zuzycie_DANE_OSOBOWE.json"
+expect("sql: plik wyniku z _DANE_OSOBOWE", res_file.exists(), True)
+res = json.loads(res_file.read_text(encoding="utf-8"))
+expect("sql: kolumny i wiersze w pliku", (res["kolumny"], res["liczba_wierszy"], res["wiersze"][0][2]),
+       (["ppe", "data", "wartosc"], 7, "1.250"))
+expect("sql: na ekranie podsumowanie, bez pelnego wyniku", ("Wierszy: 7" in text, text.count("590556731701300006")), (True, 3))
+c0 = ODBC.connects[-1]
+expect("sql: ReadOnly, bez autocommit, wycofanie i zamkniecie",
+       ("ApplicationIntent=ReadOnly" in c0["conn_str"], c0["autocommit"], c0["conn"].log[-2:]),
+       (True, False, [("rollback",), ("close",)]))
+expect("sql: token tylko w atrybucie 1256", (SQLTOKEN in c0["conn_str"], SQLTOKEN.encode("utf-16-le") in c0["attrs"][1256]),
+       (False, True))
+expect("sql: token nie w wyjsciu ani w pliku", (SQLTOKEN in text, SQLTOKEN in res_file.read_text(encoding="utf-8")),
+       (False, False))
+code, text = sql_run(SQLSRV, "ekovoltis", SQL_ITS426, "--out", "zgloszenia/ITS-426/maly.json", "--max-wierszy", "5")
+res = json.loads((WORK / "zgloszenia/ITS-426/maly_DANE_OSOBOWE.json").read_text(encoding="utf-8"))
+expect("sql: limit wierszy", (res["liczba_wierszy"], res["obcieto"], "obcieto" in text), (5, True, True))
+audit_lines = [json.loads(l) for l in (TMP / "state/audyt.jsonl").read_text(encoding="utf-8").splitlines()]
+last_sql = [a for a in audit_lines if a.get("typ") == "sql"][-1]
+expect("sql: audyt z zapytaniem i liczba wierszy, bez danych",
+       (last_sql["zapytanie"] == SQL_ITS426, last_sql["wiersze"], "wiersze" in last_sql and "1.250" not in json.dumps(last_sql)),
+       (True, 5, True))
+
+n_before = len(ODBC.connects)
+for label, q in [
+    ("srednik i DROP", "SELECT 1; DROP TABLE dbo.x"),
+    ("DROP bez srednika", "SELECT 1 DROP TABLE dbo.x"),
+    ("wielkosc liter", "sElEcT 1 dElEtE fRoM dbo.x"),
+    ("DML po komentarzu liniowym", "SELECT 1 --komentarz\nUPDATE dbo.x SET a = 1"),
+    ("DML po komentarzu blokowym", "SELECT 1 /* x */UPDATE dbo.x SET a = 1"),
+    ("zagniezdzony komentarz", "SELECT 1 /* /* */ */ DELETE FROM dbo.x"),
+    ("niezamkniety komentarz", "SELECT 1 /* DROP"),
+    ("CTE z DML", "WITH a AS (SELECT * FROM dbo.x) DELETE FROM a"),
+    ("CTE z MERGE", "WITH a AS (SELECT 1 AS k) MERGE dbo.x USING a ON 1 = 1 WHEN MATCHED THEN DELETE"),
+    ("SELECT INTO", "SELECT * INTO dbo.kopia FROM dbo.x"),
+    ("SELECT INTO tymczasowa", "SELECT * INTO #t FROM dbo.x"),
+    ("OPENROWSET", "SELECT * FROM OPENROWSET(BULK 'https://x/y.csv', FORMAT = 'CSV') AS r"),
+    ("OPENQUERY", "SELECT * FROM OPENQUERY(srv, 'SELECT 1')"),
+    ("OPENDATASOURCE", "SELECT * FROM OPENDATASOURCE('SQLNCLI', 'x').db.dbo.t"),
+    ("WAITFOR", "SELECT 1 WAITFOR DELAY '00:00:10'"),
+    ("EXEC", "EXEC sp_executesql N'DROP TABLE x'"),
+    ("EXECUTE po SELECT", "SELECT 1 EXECUTE('DROP TABLE x')"),
+    ("INSERT", "INSERT INTO dbo.x VALUES (1)"),
+    ("TRUNCATE", "TRUNCATE TABLE dbo.x"),
+    ("dwa SELECT", "SELECT 1 SELECT 2"),
+    ("sekwencja ODBC", "{call dbo.proc}"),
+    ("DECLARE i SET", "SELECT 1 DECLARE @a INT SET @a = 1"),
+    ("transakcja", "SELECT 1 COMMIT"),
+    ("znak niewidoczny", "SELECT 1 DR\u200bOP TABLE x"),
+    ("niezamkniety literal", "SELECT 'x"),
+    ("srednik na koncu", "SELECT 1;"),
+    ("slowo w nawiasach kwadratowych", "SELECT 1 [DROP] TABLE x"),
+    ("DELETE sklejone z liczba i COMMIT", "SELECT a FROM dbo.t WHERE b=1DELETE FROM dbo.t WHERE 1=1COMMIT"),
+    ("TRUNCATE sklejone z liczba", "SELECT 1 AS a WHERE 1=1TRUNCATE TABLE dbo.t"),
+    ("DROP po liczbie z kropka", "SELECT 1 AS a WHERE 1=1.DROP TABLE dbo.t"),
+    ("DROP po kwocie", "SELECT $1DROP TABLE dbo.t"),
+    ("GRANT po liczbie szesnastkowej", "SELECT 0xAAGRANT CONTROL TO x"),
+    ("ADD SENSITIVITY CLASSIFICATION", "SELECT 1 AS a ADD SENSITIVITY CLASSIFICATION TO dbo.t.c WITH (LABEL='x')"),
+    ("komentarz zakonczony samym CR", "SELECT 1 AS a -- x\rDELETE FROM dbo.t"),
+    ("hint blokady", "SELECT * FROM dbo.t WITH (TABLOCKX, HOLDLOCK)"),
+    ("separator wiersza Unicode", "SELECT 1\u2028DELETE FROM dbo.t"),
+    ("DROP po liczbie z pustym wykladnikiem", "SELECT 1 AS a WHERE 1=1eDROP TABLE dbo.t"),
+    ("DROP po .5e", "SELECT 1 AS a WHERE 1=.5eDROP TABLE dbo.t"),
+    ("inna baza (nazwa trzyczesciowa)", "SELECT * FROM innabaza.dbo.t"),
+    ("inna baza z pominietym schematem", "SELECT * FROM innabaza..t"),
+    ("nazwa piecioczesciowa", "SELECT * FROM a.b.c.d.e"),
+    ("kropka w nazwie w nawiasach", "SELECT * FROM [ekovoltis.x].dbo.t"),
+    ("kropka w nazwie w cudzyslowie", 'SELECT * FROM "ekovoltis.x".dbo.t'),
+    ("spacja w nazwie bazy", "SELECT * FROM [x ekovoltis].dbo.t"),
+    ("baza z kropkowanym i (Unicode)", "SELECT * FROM ekovolt\u0131s.dbo.t"),
+    ("baza z kropkowanym i w nawiasach", "SELECT * FROM [ekovolt\u0131s].dbo.t"),
+]:
+    code, text = sql_run(SQLSRV, "ekovoltis", q, "--out", "zgloszenia/ITS-426/x.json")
+    expect(f"sql: odrzucone przed wyslaniem: {label}", code, 3)
+    expect(f"sql: straznik odrzuca: {label}",
+           decision(f'{Q} sql {SQLSRV} ekovoltis {shlex.quote(q)} --out zgloszenia/ITS-426/x.json'), "deny")
+expect("sql: odrzucone nie dotarly do serwera", len(ODBC.connects), n_before)
+for label, q in [("literal z DROP i srednikiem", "SELECT 'DROP TABLE x; --' AS t"),
+                 ("komentarz z DELETE", "SELECT 1 AS a /* DELETE; */"),
+                 ("nazwa z baza z listy", "SELECT t.a FROM [ekovoltis].[dbo].[t] AS t"),
+                 ("polska nazwa kolumny w nawiasach", "SELECT [Wartość netto] AS w FROM dbo.t"),
+                 ("CTE, UNION ALL, podzapytania", "WITH a AS (SELECT 1 AS x) SELECT x FROM a UNION ALL SELECT 2 "
+                                                  "WHERE 1 IN (SELECT 1) ORDER BY 1 OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY")]:
+    expect(f"sql: dozwolone: {label}", C.sql_query_problem(q, "ekovoltis"), None)
+    expect(f"sql: straznik dopuszcza: {label}",
+           decision(f'{Q} sql {SQLSRV} ekovoltis {shlex.quote(q)} --out zgloszenia/ITS-426/x.json'), "allow")
+
+for label, server, db in [("serwer spoza listy", "inny.datawarehouse.fabric.microsoft.com", "ekovoltis"),
+                          ("Fabric SQL database", "x.database.fabric.microsoft.com", "ekovoltis"),
+                          ("baza spoza listy", SQLSRV, "master"),
+                          ("host spoza Fabric", "evil.example.com", "ekovoltis"),
+                          ("serwer z portem", SQLSRV + ",1433", "ekovoltis"),
+                          ("baza ze srednikiem", SQLSRV, "ekovoltis;Server=evil.example.com")]:
+    code, _ = sql_run(server, db, "SELECT 1", "--out", "zgloszenia/ITS-426/x.json")
+    expect(f"sql: endpoint odrzucony: {label}", code, 3)
+    expect(f"sql: straznik odrzuca endpoint: {label}",
+           decision(f'{Q} sql {shlex.quote(server)} {shlex.quote(db)} "SELECT 1" --out zgloszenia/ITS-426/x.json'), "deny")
+expect("sql: endpoint spoza listy nie dostal tokenu", len(ODBC.connects), n_before)
+cfg_bad = dict(cfg, fabric_sql_endpoints=["evil.example.com/ekovoltis"])
+expect("sql: zly wpis w ustawieniach zgloszony", any("fabric_sql_endpoints" in p for p in C.config_problems(cfg_bad)), True)
+
+for label, args in [("bez --out", [SQLSRV, "ekovoltis", "SELECT 1"]),
+                    ("--out poza zgloszeniem", [SQLSRV, "ekovoltis", "SELECT 1", "--out", "wynik.json"]),
+                    ("--out na plan.md", [SQLSRV, "ekovoltis", "SELECT 1", "--out", "zgloszenia/ITS-426/plan.md"])]:
+    code, _ = sql_run(*args)
+    expect(f"sql: odmowa zapisu: {label}", code != 0, True)
+    expect(f"sql: straznik: {label}", decision(f"{Q} sql " + " ".join(shlex.quote(a) for a in args)), "deny")
+code, _ = sql_run(SQLSRV, "ekovoltis", "SELECT 1", "--out", "zgloszenia/ITS-426/x.json", "--max-wierszy", "999999")
+expect("sql: --max-wierszy ponad limit", code != 0, True)
+
+FAKE_OPTIONS["v"] = 32
+code, text = sql_run(SQLSRV, "ekovoltis", "SELECT 1 AS a", "--out", "zgloszenia/ITS-426/x.json")
+expect("sql: bez transakcji niejawnych zapytanie nie jest wykonane",
+       (code != 0, ("execute", "SELECT 1 AS a") in ODBC.connects[-1]["conn"].log), (True, False))
+FAKE_OPTIONS["v"] = 2
+ODBC.fail = "Bearer " + SQLTOKEN
+code, text = sql_run(SQLSRV, "ekovoltis", "SELECT 1", "--out", "zgloszenia/ITS-426/blad.json")
+expect("sql: blad logowania: komunikat z kontem e2vitservice, bez tokenu",
+       (code != 0, "e2vitservice" in text, SQLTOKEN in text), (True, True, False))
+expect("sql: po bledzie transakcja wycofana", ODBC.connects[-1]["conn"].log[-2:], [("rollback",), ("close",)])
+ODBC.fail = ""
+P._odbc = lambda: FakeOdbc(drivers=["SQL Server"])
+code, text = sql_run(SQLSRV, "ekovoltis", "SELECT 1", "--out", "zgloszenia/ITS-426/x.json")
+expect("sql: brak sterownika 18 opisany", (code != 0, "ODBC Driver 18" in text), (True, True))
+
+
+def _no_pyodbc():
+    raise RuntimeError("Brak modulu pyodbc. Zainstaluj: python -m pip install pyodbc")
+
+
+P._odbc = _no_pyodbc
+code, text = sql_run(SQLSRV, "ekovoltis", "SELECT 1", "--out", "zgloszenia/ITS-426/x.json")
+expect("sql: brak pyodbc opisany", (code != 0, "pyodbc" in text), (True, True))
+
+results37 = []
+P._odbc = lambda: ODBC
+P.probe_sql(lambda o, t, ok, s, h="": results37.append((o, t, ok, s)))
+expect("sprawdz-dostepy: sterownik i SELECT TOP 1 na endpoincie",
+       [(r[1], r[2]) for r in results37], [("sterownik ODBC", True), ("SELECT TOP 1 ekovoltis", True)])
+expect("sprawdz-dostepy: bez tokenu w raporcie", any(SQLTOKEN in str(r) for r in results37), False)
+
+for label, cmd, tool in [("sqlcmd", f'sqlcmd -S {SQLSRV} -d ekovoltis -G -Q "SELECT 1"', "Bash"),
+                         ("sqlcmd bez hosta", 'sqlcmd -S srv -Q "DELETE FROM x"', "Bash"),
+                         ("sqlcmd.exe", 'C:\\tools\\sqlcmd.exe -Q "SELECT 1"', "PowerShell"),
+                         ("Invoke-Sqlcmd", 'Invoke-Sqlcmd -ServerInstance srv -Query "SELECT 1"', "PowerShell"),
+                         ("token dla SQL", "az account get-access-token --resource https://database.windows.net/", "Bash")]:
+    expect(f"sql: straznik blokuje {label}", decision(cmd, tool), "deny")
+expect("sql: slowo sqlcmd w nazwie pliku nie blokuje", decision("cat notatki-mysqlcmdx.txt"), None)
+expect("sql: echo sqlcmd nie blokuje", decision("echo sqlcmd"), None)
+expect("sql: grep bcp nie blokuje", decision("grep bcp notatki.md"), None)
+expect("sql: sqlcmd w bash -c", decision("bash -c 'sqlcmd -Q x'"), "deny")
+expect("sql: sqlcmd pod nakladka", decision('env A=1 timeout 5 sqlcmd -Q "SELECT 1"'), "deny")
+expect("sql: Read-SqlTableData", decision("Read-SqlTableData -ServerInstance s -TableName t", "PowerShell"), "deny")
+SQLBASE = f"{Q} sql {SQLSRV} ekovoltis"
+for label, cmd, tool, want in [
+    ("podstawienie $() w zapytaniu", SQLBASE + ' "SELECT \'$(az account get-access-token -o tsv)\' AS a" --out zgloszenia/ITS-426/a.json', "Bash", "deny"),
+    ("backtick w zapytaniu", SQLBASE + ' "SELECT `id` AS a" --out zgloszenia/ITS-426/a.json', "Bash", "deny"),
+    ("zmienna w zapytaniu", SQLBASE + ' "SELECT $X AS a" --out zgloszenia/ITS-426/a.json', "Bash", "deny"),
+    ("zapytanie w pojedynczym cudzyslowie z $( jako nazwa", SQLBASE + " 'SELECT 1 AS [$(x)]' --out zgloszenia/ITS-426/a.json", "Bash", "allow"),
+    ("przekierowanie do plan.md", SQLBASE + ' "SELECT 1 AS a" --out zgloszenia/ITS-426/a.json > zgloszenia/ITS-426/plan.md', "Bash", "deny"),
+    ("przekierowanie bledow do dziennika", SQLBASE + ' "SELECT 1 AS a" --out zgloszenia/ITS-426/a.json 2>zgloszenia/ITS-426/wykonanie.jsonl', "Bash", "deny"),
+    ("przekierowanie >&plik", SQLBASE + ' "SELECT 1 AS a" --out zgloszenia/ITS-426/a.json >&zgloszenia/ITS-426/plan.md', "Bash", "deny"),
+    ("przekierowanie &>plik", SQLBASE + ' "SELECT 1 AS a" --out zgloszenia/ITS-426/a.json &>zgloszenia/ITS-426/plan.md', "Bash", "deny"),
+    ("2>&1 dozwolone", SQLBASE + ' "SELECT 1 AS a" --out zgloszenia/ITS-426/a.json 2>&1', "Bash", "allow"),
+    ("PowerShell $() w zapytaniu", f'& "{WIN}" sql {SQLSRV} ekovoltis "SELECT 1 AS a $(Remove-Item x)" --out zgloszenia/ITS-426/a.json', "PowerShell", "deny"),
+    ("PowerShell w pojedynczym cudzyslowie", f"& \"{WIN}\" sql {SQLSRV} ekovoltis 'SELECT 1 AS a' --out zgloszenia/ITS-426/a.json", "PowerShell", "allow"),
+    ("get z podstawieniem", f'{Q} get "{DV}/api/data/v9.2/$(id)"', "Bash", "deny"),
+    ("get z przekierowaniem do stanu", f'{Q} get "{DV}/api/data/v9.2/WhoAmI" > ~/.claude/pp-support-state/x', "Bash", "deny"),
+    ("get z $top w cudzyslowie nadal dozwolony", f'{Q} get "{DV}/api/data/v9.2/x?$top=5"', "Bash", "allow"),
+    ("get 2>/dev/null dozwolony", f'{Q} get "{DV}/api/data/v9.2/WhoAmI" 2>/dev/null', "Bash", "allow"),
+    ("komentarz z apostrofem i nowa linia", f"{Q} get x #'\nrm -rf ~ #'", "Bash", "deny"),
+    ("cudzyslow $'...'", f"{Q} get $'\\'' ; echo X #'", "Bash", "deny"),
+    ("PowerShell nawias", f'& "{WIN}" get (Remove-Item C:/x)', "PowerShell", "deny"),
+    ("PowerShell metoda na zmiennej", f'& "{WIN}" get $ExecutionContext.InvokeCommand.InvokeScript(\'x\')', "PowerShell", "deny"),
+    ("PowerShell typograficzne cudzyslowy", f"& \"{WIN}\" get 'a\u2019; Remove-Item C:/x; \u2018b'", "PowerShell", "deny"),
+    ("PowerShell here-string", f"& \"{WIN}\" get @'\n'\"\n'@; Remove-Item C:/x #\"", "PowerShell", "deny"),
+    ("PowerShell --%", f"& \"{WIN}\" get --% x", "PowerShell", "deny"),
+    ("cudzyslow w celu przekierowania", f"{Q} get url >/dev/null' ' $(echo X >&2) ' >/dev/null'", "Bash", "deny"),
+    ("backslash i cudzyslow", f"{Q} get url \\\" >/dev/null' ' ; echo X > x.txt #\\'", "Bash", "deny"),
+    ("PowerShell cudzyslow w celu przekierowania", f"& '{WIN}' get url 2>&1' ' $(Write-Host X) ' 2>&1'", "PowerShell", "deny"),
+    ("tabulator po >", f"{Q} get url >\t../evil.txt", "Bash", "deny"),
+    ("tabulator po <", f"{Q} get url <\t~/.bashrc", "Bash", "deny"),
+    ("PowerShell tabulator po *>", f"& '{WIN}' get url *>\tevil.txt", "PowerShell", "deny"),
+    ("NBSP po >", f"{Q} get url > evil.txt", "Bash", "deny"),
+    ("cel w cudzyslowie", f"{Q} get url >'$null'", "Bash", "deny"),
+    ("rozwiniecie klamrowe", f"{Q} get url {{--out,../../evil}}", "Bash", "deny"),
+    ("bash > nul", f"{Q} get url > nul", "Bash", "deny"),
+    ("bash >/DEV/NULL", f"{Q} get url >/DEV/NULL", "Bash", "deny"),
+    ("bash 2>$null", f"{Q} get url 2>$null", "Bash", "deny"),
+    ("PowerShell > /dev/null", f"& '{WIN}' get url > /dev/null", "PowerShell", "deny"),
+    ("pac z podstawieniem bez auto-zgody", "pac org list $(touch PWN)", "Bash", None),
+    ("pac z przekierowaniem bez auto-zgody", "pac org list > PWN", "Bash", None),
+    ("az z backtickiem bez auto-zgody", 'az account show --query "`touch PWN`"', "Bash", None),
+    ("ppcall i pac z \\' bez auto-zgody", f"{Q} status INC-1; pac org list \\'; touch PWN; echo \\'", "Bash", None),
+    ("pac odczyt nadal dozwolony", "pac org list", "Bash", "allow"),
+    ("sql: $$ w zapytaniu", SQLBASE + ' "SELECT $$ AS a" --out zgloszenia/ITS-426/a.json', "Bash", "deny"),
+    ("PowerShell adres z $top w '...'", f"& \"{WIN}\" get '{DV}/api/data/v9.2/x?$top=5' 2>$null", "PowerShell", "allow"),
+]:
+    expect(f"powloka w ppcall: {label}", decision(cmd, tool), want)
+cfg["fabric_sql_endpoints"] = []
+C.save_config(cfg)
+expect("sql: pusta lista endpointow wylacza komende",
+       decision(f'{Q} sql {SQLSRV} ekovoltis "SELECT 1" --out zgloszenia/ITS-426/x.json'), "deny")
+for f in (WORK / "zgloszenia/ITS-426").glob("*_DANE_OSOBOWE.json"):
+    f.unlink()
+
 print()
 print("WSZYSTKO OK" if not FAILS else f"NIEUDANE: {FAILS}")
 sys.exit(1 if FAILS else 0)

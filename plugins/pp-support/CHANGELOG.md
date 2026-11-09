@@ -1,5 +1,24 @@
 # Zmiany w pp-support
 
+## 1.4.0 (2026-11-09)
+
+ITS-426, decyzja Michała Kaszty.
+
+- `ppcall sql <serwer> <baza> "<SELECT ...>" --out <katalog zgłoszenia>/plik.json [--max-wierszy N] [--limit-czasu S]`: odczyt z hurtowni Fabric bez planu i akceptacji. Endpointy tylko z nowego ustawienia `fabric_sql_endpoints` (`<serwer>/<baza>`, hosty SQL Fabric), na start hurtownia `ekovoltis`.
+- Zapytanie sprawdzają strażnik i `ppcall` przed wysłaniem: najpierw usuwają komentarze (także zagnieżdżone) i literały, potem przepuszczają tylko jedno `SELECT` albo `WITH … SELECT`. Odrzucane są `;`, kilka poleceń, sekwencje ODBC `{…}`, znaki niewidoczne oraz słowa zmieniające dane, schemat i stan sesji w dowolnym miejscu (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `EXEC`, `SELECT INTO`, `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`, `WAITFOR`, `DECLARE`, `SET`, transakcje i inne).
+- Połączenie przez `pyodbc` i ODBC Driver 18 z `ApplicationIntent=ReadOnly`, w transakcji zawsze wycofywanej. Token dla `database.windows.net` ppcall przekazuje sterownikowi jako atrybut połączenia, nigdy na ekran, do plików ani do dziennika. Brak `pyodbc` albo sterownika kończy się czytelnym komunikatem. Przy odmowie logowania komunikat podaje konto Azure CLI (e2vitservice).
+- Wynik tylko do pliku w katalogu zgłoszenia z `_DANE_OSOBOWE` w nazwie; na ekranie liczba wierszy, kolumny i trzy pierwsze wiersze. Limit 5000 wierszy (do 50000) i 120 s (do 600 s). Dziennik audytu: zapytanie i liczba wierszy, bez danych.
+- Strażnik blokuje `sqlcmd`, `Invoke-Sqlcmd`, `bcp` i inne klienty SQL.
+- `sprawdz-dostepy`: kontrola sterownika i `SELECT TOP 1` na każdym endpoincie.
+- Po przeglądzie bezpieczeństwa:
+  - Słowo sklejone z liczbą (`WHERE 1=1DELETE …`, `1=1COMMIT`, `0xAAGRANT`, `$1DROP`) jest rozdzielane jak w lekserze T-SQL, więc nie omija listy zakazanych słów. Na liście są też `ADD`, `GET` i hinty blokad (`TABLOCKX`, `HOLDLOCK` i inne). Komentarz `--` kończy się także na samym `\r`, a separatory wiersza Unicode są odrzucane.
+  - Tylko hosty `*.datawarehouse.fabric.microsoft.com` (bez Fabric SQL database). Nazwy trzy- i czteroczęściowe tylko z bazą z listy (bez odczytu innych baz hurtowni i serwerów połączonych); nazwa w `[]` albo `""` jest jednym identyfikatorem (`[ekovoltis.x].dbo.t` i `[x ekovoltis].dbo.t` to inne bazy).
+  - Dziennik audytu zawiera pełny tekst zapytania (decyzja Michała Kaszty); filtry z danymi osobowymi zostają w `audyt.jsonl`.
+  - `ppcall` sprawdza w `@@OPTIONS`, że sesja jest w trybie transakcji niejawnych; bez tego zapytanie nie jest wykonywane.
+  - Strażnik dopuszcza polecenie `ppcall` bez pytania tylko z argumentami, które czyta tak samo jak powłoka. Odrzuca podstawienia (`$(...)`, `` `...` ``, `${...}`, `<(...)`), `$'...'`, komentarze `#`, nowe linie, typograficzne i niezamknięte cudzysłowy, w PowerShell `$`, nawiasy, here-stringi i `--%` poza `'...'`, a także `\`, wzorce i nawiasy klamrowe poza cudzysłowem w bash, odstępy inne niż spacja i każde przekierowanie poza `2>&1`, `>&2`, w bash `>/dev/null`, w PowerShell `2>$null` (luka sprzed 1.4.0, np. `ppcall get … > plan.md`); w `ppcall sql` także zmienne powłoki. `>&` i `&>` nie dzielą już polecenia na części.
+  - Odczyt `pac` i `az` przechodzi bez pytania tylko przy tej samej prostej składni; z podstawieniem albo przekierowaniem (`pac org list $(…)`, `pac org list > plik`) Claude Code pyta człowieka (luka sprzed 1.4.0).
+  - Klienci SQL są rozpoznawani jako program (także pod `env`, `timeout`), a nie po słowie w dowolnym miejscu; doszły polecenia `*-Sql*` i `*-Dba*` z PowerShell.
+
 ## 1.3.0 (2026-11-04)
 
 ITS-418, decyzja Michała Kaszty z 2026-11-04 (wariant B).

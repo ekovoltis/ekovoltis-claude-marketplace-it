@@ -1,4 +1,4 @@
-# pp-support 1.3.0
+# pp-support 1.4.0
 
 Plugin Claude Code wspierający dyżurnego IT w obsłudze zgłoszeń dotyczących automatyzacji Power Platform w Ekovoltis. Claude diagnozuje odczytem, przygotowuje z pracownikiem plan naprawy i wykonuje go wyłącznie po jawnej akceptacji człowieka.
 
@@ -46,6 +46,7 @@ pp-support/
 | Blokowane | Zamiast tego |
 |---|---|
 | `curl`, `Invoke-RestMethod`, skrypty z adresami usług Microsoft | `ppcall get` |
+| `sqlcmd`, `Invoke-Sqlcmd`, `bcp` i inne klienty SQL | `ppcall sql` |
 | `az account get-access-token`, `az login`, `Connect-*`, MSAL | logowanie robi człowiek, tokeny pobiera `ppcall` w swoim procesie |
 | `az rest`, zmieniające `az` i `pac`, PowerShell `Set-/New-/Remove-*` dla Az, Power Apps, Flow, PnP, Graph | krok planu i `ppcall exec` |
 | odczyt wartości sekretów Key Vault | brak, poza zakresem pluginu |
@@ -137,6 +138,21 @@ Od 1.3.0 `dataset` (witryna akcji SharePoint) jest kluczem zabronionym, a w akcj
 
 `ppcall flow-diff <ID> <adres Dataverse> <workflowid> <plik sprzed zmiany>` (tylko odczyt) porównuje aktualną definicję z plikiem z katalogu zgłoszenia. Różnice merytoryczne pokazuje osobno od zmian, które nowy designer wprowadza przy zapisie (puste `runAfter`, `inputs/authentication` z `$ConnectionKey`, pusty `templateName`, dopisane `connection.name`, puste `additionalProperties` w schemacie). Sprawdza też, czy `connectionReferences` są te same, i podaje ich aktualne `connectionid`. Wynik zapisuje w `zgloszenia/<ID>/flow-diff-<workflowid>-<czas>.json`, z hasłami zamaskowanymi.
 
+## Fabric SQL: tylko odczyt (`ppcall sql`, ITS-426)
+
+`ppcall sql <serwer> <baza> "<SELECT ...>" --out <katalog zgłoszenia>/plik.json [--max-wierszy N] [--limit-czasu S]` wykonuje jedno zapytanie w hurtowni Fabric. Jest odczytem, więc nie wymaga planu ani akceptacji.
+
+- **Endpointy:** tylko pary `<serwer>/<baza>` z ustawienia `fabric_sql_endpoints`, a serwer musi być endpointem SQL Fabric (`*.datawarehouse.fabric.microsoft.com`). Na start: hurtownia `ekovoltis`.
+- **Tylko odczyt, dwa poziomy:**
+  - Strażnik i `ppcall` przed wysłaniem usuwają komentarze (także zagnieżdżone) i literały tekstowe, a potem sprawdzają zapytanie. Przechodzi jedno polecenie `SELECT` albo `WITH … SELECT`, z `UNION`, `EXCEPT`, `INTERSECT` i podzapytaniami. Odrzucane są `;`, kilka poleceń, nawiasy klamrowe (sekwencje ODBC) i znaki niewidoczne. Słowo sklejone z liczbą (`1=1DELETE`, `0xAAGRANT`) jest rozdzielane tak jak w lekserze T-SQL. Odrzucane są też słowa zmieniające dane, schemat albo stan sesji oraz hinty blokad (`TABLOCKX`, `HOLDLOCK` i inne), w dowolnym miejscu poza literałami i komentarzami, także w nazwach w `[]`: `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `EXEC`, `INTO` (`SELECT INTO`), `OPENROWSET`, `OPENQUERY`, `OPENDATASOURCE`, `WAITFOR`, `DECLARE`, `SET`, transakcje i inne (lista `common.SQL_FORBIDDEN_WORDS`). T-SQL dopuszcza kilka poleceń bez średnika, dlatego słowa są sprawdzane wszędzie. Kolumnę o takiej nazwie odczytaj przez `SELECT *`. Nazwy trzy- i czteroczęściowe muszą zaczynać się od bazy z listy (`ekovoltis.dbo.tabela`), więc zapytanie nie sięga do innych baz tej samej hurtowni; kolumny podawaj przez alias tabeli.
+  - Połączenie działa w transakcji niejawnej (`IMPLICIT_TRANSACTIONS`), którą `ppcall` zawsze wycofuje po odczycie. Przed zapytaniem `ppcall` sprawdza w `@@OPTIONS`, że ten tryb jest włączony, i bez niego nie wykonuje zapytania. `ApplicationIntent=ReadOnly` jest ustawione, ale w Fabric niczego nie wymusza (brak replik). Pełną ochronę daje dopiero konto z samym `db_datareader` (niezmiennik 8).
+  - Strażnik dopuszcza `ppcall` bez pytania, więc w poleceniu `ppcall` odrzuca podstawienia powłoki (`$(...)`, `` `...` ``, `${...}`, `<(...)`, `$'...'`, komentarze `#`, separatory, nowe linie, typograficzne cudzysłowy, niezamknięte cudzysłowy, w PowerShell także `$`, nawiasy, here-stringi i `--%` poza `'...'`) oraz przekierowanie wyjścia do pliku (dozwolone tylko `2>&1`, `>&2`, w bash `>/dev/null`, w PowerShell `2>$null`). Te same reguły decydują, czy odczyt `pac` i `az` przechodzi bez pytania; przy złożonej składni Claude Code pyta człowieka. W bash odrzuca też `\`, wzorce i nawiasy klamrowe poza cudzysłowem, a wszędzie odstępy inne niż zwykła spacja. W `ppcall sql` także zmienne powłoki. Adres i zapytanie podawaj w pojedynczym cudzysłowie `'...'`, w PowerShell zawsze.
+- **Token** dla `https://database.windows.net/` `ppcall` pobiera z Azure CLI w swoim procesie i przekazuje sterownikowi ODBC jako atrybut połączenia, nie w tekście połączenia. Nie trafia na ekran, do plików ani do dziennika.
+- **Wynik** trafia wyłącznie do pliku w katalogu zgłoszenia. `ppcall` dopisuje do nazwy `_DANE_OSOBOWE` (np. `zuzycie_DANE_OSOBOWE.json`): plik może zawierać dane klientów, usuń go po zamknięciu zgłoszenia. Na ekranie jest tylko liczba wierszy, kolumny i pierwsze trzy wiersze. Domyślny limit to 5000 wierszy (najwyżej 50000) i 120 s (najwyżej 600 s).
+- **Dziennik audytu:** tekst zapytania, endpoint i liczba wierszy, bez danych.
+- **Konto:** jak przy innych odczytach, `ppcall` łączy się kontem Azure CLI z konfiguracji dyżuru (dziś e2vitservice), nie kontem dyżurnego. To konto potrzebuje roli Viewer w obszarze roboczym hurtowni i uprawnienia `ReadData` (albo `db_datareader`) na hurtowni.
+- **Wymagania:** pakiet `pyodbc` (`python -m pip install pyodbc`) i sterownik Microsoft „ODBC Driver 18 for SQL Server”. Bez nich `ppcall sql` kończy się komunikatem, a reszta pluginu działa bez zmian. `sprawdz-dostepy` sprawdza sterownik i wykonuje `SELECT TOP 1` na każdym endpoincie.
+
 ## SharePoint: tylko odczyt przez Graph, na koncie Azure CLI
 
 `ppcall` czyta SharePoint na koncie, na którym zalogowano Azure CLI w konfiguracji dyżuru (test dostępów pokazuje je w wierszu „konto ppcall”). To konto, a nie konto z przeglądarki, musi mieć odczyt w witrynie (stan z 04.11.2026: e2vitservice bez dostępu do BazadokumentowEkovoltis, ITS-418).
@@ -174,7 +190,7 @@ Katalog `zgloszenia/` może zawierać dane klientów odczytane z Dataverse, a st
 ## Wymagania na stanowisku
 
 - Claude Code (na Windows z Git Bash)
-- Python 3.9 lub nowszy (bez dodatkowych pakietów)
+- Python 3.9 lub nowszy (bez dodatkowych pakietów; do `ppcall sql` także `pyodbc` i ODBC Driver 18 for SQL Server)
 - Azure CLI, zalogowane przez pracownika: `az login`
 - Power Platform CLI: `dotnet tool install --global Microsoft.PowerApps.CLI.Tool`, profil przez `pac auth create`
 
